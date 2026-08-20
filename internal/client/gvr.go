@@ -39,4 +39,16 @@ var (
 	GVRSecret = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "secrets",
 	}
+	GVRMultiClusterObservability = schema.GroupVersionResource{
+		Group: "observability.open-cluster-management.io", Version: "v1beta2", Resource: "multiclusterobservabilities",
+	}
+	GVRDeployment = schema.GroupVersionResource{
+		Group: "apps", Version: "v1", Resource: "deployments",
+	}
+	GVRService = schema.GroupVersionResource{
+		Group: "", Version: "v1", Resource: "services",
+	}
+	GVRPersistentVolumeClaim = schema.GroupVersionResource{
+		Group: "", Version: "v1", Resource: "persistentvolumeclaims",
+	}
 )
