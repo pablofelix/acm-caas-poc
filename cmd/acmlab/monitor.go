@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/pablofelix/acm-caas-poc/internal/monitoring"
+	"github.com/pablofelix/acm-caas-poc/internal/observability"
 )
 
 func monitorCmd() *cobra.Command {
@@ -14,7 +15,7 @@ func monitorCmd() *cobra.Command {
 		Use:   "monitor",
 		Short: "Monitor cluster resources via ManagedClusterInfo",
 	}
-	cmd.AddCommand(monitorListCmd(), monitorStatusCmd())
+	cmd.AddCommand(monitorListCmd(), monitorStatusCmd(), monitorSetupCmd(), monitorTeardownCmd(), monitorObsStatusCmd())
 	return cmd
 }
 
@@ -79,6 +80,66 @@ func monitorStatusCmd() *cobra.Command {
 						n.Name, n.Ready, n.CPUCapacity, n.MemoryKi, n.InstanceType, n.Region, n.Zone)
 				}
 			}
+			return nil
+		},
+	}
+}
+
+func monitorSetupCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "setup",
+		Short: "Deploy MinIO and enable MultiClusterObservability",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := observability.New(c, cfg)
+			fmt.Println("Setting up observability (MinIO + MCO)...")
+			if err := mgr.Setup(context.Background()); err != nil {
+				return err
+			}
+			fmt.Println("Observability setup complete. Use 'acmlab monitor obs-status' to check readiness.")
+			return nil
+		},
+	}
+}
+
+func monitorTeardownCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "teardown",
+		Short: "Remove MinIO and MultiClusterObservability — clean, no leftovers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := observability.New(c, cfg)
+			fmt.Println("Tearing down observability...")
+			if err := mgr.Teardown(context.Background()); err != nil {
+				return err
+			}
+			fmt.Println("Observability teardown complete. All resources removed.")
+			return nil
+		},
+	}
+}
+
+func monitorObsStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "obs-status",
+		Short: "Check MultiClusterObservability status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := observability.New(c, cfg)
+			status, err := mgr.Status(context.Background())
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Observability status: %s\n", status)
 			return nil
 		},
 	}
