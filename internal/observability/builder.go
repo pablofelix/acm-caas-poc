@@ -75,7 +75,11 @@ func (m *Manager) ensureMinioDeployment(ctx context.Context) error {
 							map[string]interface{}{
 								"name":  MinIOName,
 								"image": "quay.io/minio/minio:latest",
-								"args":  []interface{}{"server", "/data"},
+								"command": []interface{}{"/bin/sh", "-c"},
+								"args": []interface{}{
+									fmt.Sprintf("minio server /data &\nuntil mc alias set local http://localhost:%d %s %s 2>/dev/null; do sleep 1; done\nmc mb --ignore-existing local/%s\nwait",
+										MinIOPort, MinIOAccessKey, MinIOSecretKey, MinioBucket),
+								},
 								"env": []interface{}{
 									map[string]interface{}{
 										"name":  "MINIO_ROOT_USER",
@@ -84,10 +88,6 @@ func (m *Manager) ensureMinioDeployment(ctx context.Context) error {
 									map[string]interface{}{
 										"name":  "MINIO_ROOT_PASSWORD",
 										"value": MinIOSecretKey,
-									},
-									map[string]interface{}{
-										"name":  "MINIO_DEFAULT_BUCKETS",
-										"value": MinioBucket,
 									},
 								},
 								"ports": []interface{}{
@@ -194,6 +194,10 @@ func (m *Manager) ensureMCO(ctx context.Context) error {
 			"spec": map[string]interface{}{
 				"instanceSize":       "minimal",
 				"enableDownsampling": false,
+				"observabilityAddonSpec": map[string]interface{}{
+					"enableMetrics": true,
+					"interval":      int64(300),
+				},
 				"storageConfig": map[string]interface{}{
 					"metricObjectStorage": map[string]interface{}{
 						"name": SecretName,
