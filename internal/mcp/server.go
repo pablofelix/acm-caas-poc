@@ -11,6 +11,7 @@ import (
 	"github.com/pablofelix/acm-caas-poc/internal/client"
 	"github.com/pablofelix/acm-caas-poc/internal/config"
 	"github.com/pablofelix/acm-caas-poc/internal/fleet"
+	"github.com/pablofelix/acm-caas-poc/internal/monitoring"
 )
 
 func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
@@ -23,6 +24,9 @@ func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
 	fleetInsp := fleet.New(c, cfg)
 	registerFleetTools(s, fleetInsp)
 	registerHealthTool(s, c)
+
+	mon := monitoring.New(c, cfg)
+	registerMonitoringTools(s, mon)
 
 	return s
 }
@@ -80,6 +84,38 @@ func registerFleetTools(s *server.MCPServer, fi *fleet.Inspector) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			data, _ := json.MarshalIndent(info, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+}
+
+func registerMonitoringTools(s *server.MCPServer, mon *monitoring.Monitor) {
+	s.AddTool(
+		mcp.NewTool("acm_list_cluster_resources",
+			mcp.WithDescription("List resource summaries for all clusters — node count, CPU capacity, OCP version, and channel."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			results, err := mon.ListClusterResources(ctx)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(results, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_cluster_resources",
+			mcp.WithDescription("Get detailed resource info for a specific cluster — per-node CPU, memory, instance type, region, zone, and readiness."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Cluster name")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			cr, err := mon.GetClusterResources(ctx, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(cr, "", "  ")
 			return mcp.NewToolResultText(string(data)), nil
 		},
 	)

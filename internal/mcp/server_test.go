@@ -24,9 +24,10 @@ func fakeClientWithClusters(clusters ...*unstructured.Unstructured) *client.Clie
 	}
 	fake := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{
-			client.GVRManagedCluster:    "ManagedClusterList",
-			client.GVRClusterDeployment: "ClusterDeploymentList",
-			client.GVRManifestWork:      "ManifestWorkList",
+			client.GVRManagedCluster:     "ManagedClusterList",
+			client.GVRClusterDeployment:  "ClusterDeploymentList",
+			client.GVRManifestWork:       "ManifestWorkList",
+			client.GVRManagedClusterInfo: "ManagedClusterInfoList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -212,6 +213,99 @@ func TestGetManagedClusterNotFound(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	if !result.IsError {
+		t.Error("expected isError=true for nonexistent cluster")
+	}
+}
+
+func newClusterInfoObj(name string) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "internal.open-cluster-management.io", Version: "v1beta1", Kind: "ManagedClusterInfo",
+	})
+	obj.SetName(name)
+	obj.SetNamespace(name)
+	obj.Object["status"] = map[string]interface{}{
+		"version":    "v1.30.0",
+		"consoleURL": "https://console.example.com",
+		"distributionInfo": map[string]interface{}{
+			"ocp": map[string]interface{}{
+				"channel": "stable-4.21",
+				"version": "4.21.29",
+			},
+		},
+		"nodeList": []interface{}{
+			map[string]interface{}{
+				"name": name + "-master-0",
+				"capacity": map[string]interface{}{
+					"cpu":    "8",
+					"memory": "32Gi",
+					"socket": "2",
+				},
+				"labels": map[string]interface{}{
+					"node.kubernetes.io/instance-type": "bx2-8x32",
+					"topology.kubernetes.io/region":    "us-south",
+					"topology.kubernetes.io/zone":      "us-south-1",
+				},
+				"conditions": []interface{}{
+					map[string]interface{}{"type": "Ready", "status": "True"},
+				},
+			},
+		},
+	}
+	return obj
+}
+
+func TestListClusterResourcesReturnsData(t *testing.T) {
+	c := fakeClientWithClusters(newClusterInfoObj("cluster-1"))
+	resp := callTool(t, c, "acm_list_cluster_resources", nil)
+	text := extractToolText(t, resp)
+
+	var results []map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("got %d results, want 1", len(results))
+	}
+}
+
+func TestClusterResourcesReturnsNodeDetails(t *testing.T) {
+	c := fakeClientWithClusters(newClusterInfoObj("my-cluster"))
+	resp := callTool(t, c, "acm_cluster_resources", map[string]interface{}{"name": "my-cluster"})
+	text := extractToolText(t, resp)
+
+	var cr map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &cr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cr["TotalCPU"].(float64) != 8 {
+		t.Errorf("TotalCPU = %v, want 8", cr["TotalCPU"])
+	}
+	if cr["OCPVersion"] != "4.21.29" {
+		t.Errorf("OCPVersion = %v, want 4.21.29", cr["OCPVersion"])
+	}
+}
+
+func TestClusterResourcesNotFound(t *testing.T) {
+	c := fakeClientWithClusters()
+	s := NewServer(c, config.Config{})
+	msg, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]interface{}{
+			"name":      "acm_cluster_resources",
+			"arguments": map[string]interface{}{"name": "nonexistent"},
+		},
+	})
+	resp := s.HandleMessage(context.Background(), msg)
+	rpcResp := resp.(mcplib.JSONRPCResponse)
+	data, _ := json.Marshal(rpcResp.Result)
+	var result struct {
+		IsError bool `json:"isError"`
+	}
+	json.Unmarshal(data, &result)
 	if !result.IsError {
 		t.Error("expected isError=true for nonexistent cluster")
 	}
