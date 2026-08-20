@@ -1,0 +1,6 @@
+.env
+style.md
+*.exe
+vendor/
+bin/
+docs/superpowers/
