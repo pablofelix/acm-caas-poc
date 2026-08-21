@@ -51,4 +51,10 @@ var (
 	GVRPersistentVolumeClaim = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "persistentvolumeclaims",
 	}
+	GVRConfigurationPolicy = schema.GroupVersionResource{
+		Group: "policy.open-cluster-management.io", Version: "v1", Resource: "configurationpolicies",
+	}
+	GVRManagedClusterSetBinding = schema.GroupVersionResource{
+		Group: "cluster.open-cluster-management.io", Version: "v1beta2", Resource: "managedclustersetbindings",
+	}
 )
