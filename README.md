@@ -7,11 +7,11 @@ PoC that validates Red Hat ACM 2.17 capabilities for a Containers-as-a-Service p
 | UC | Description | Status |
 |----|-------------|--------|
 | UC-01 | Cluster provisioning via ClusterDeployment | Planned |
-| UC-02 | Image registry restriction policy | Planned |
+| UC-02 | Governance policy management | Implemented |
 | UC-03 | Tenant RBAC isolation via ManifestWork | Planned |
 | UC-04 | Fleet status and observability | Implemented |
 | UC-05 | Hibernate/resume lifecycle (Hive-only) | Planned |
-| UC-06 | Cluster resource monitoring | Planned |
+| UC-06 | Cluster resource monitoring & observability | Implemented |
 | UC-07 | External cluster import | Planned |
 
 ## Quick Start
@@ -29,6 +29,15 @@ bin/acmlab fleet list
 
 # 4. Get cluster details
 bin/acmlab fleet status infraops1
+
+# 5. Monitor cluster resources
+bin/acmlab monitor list
+
+# 6. Manage governance policies
+bin/acmlab policy list
+bin/acmlab policy apply my-policy --remediation enforce --registries "registry.redhat.io,quay.io"
+bin/acmlab policy status my-policy
+bin/acmlab policy remove my-policy
 ```
 
 ## MCP Server
@@ -53,7 +62,7 @@ Register in Claude Code's MCP config:
 }
 ```
 
-Available tools: `acm_fleet_status`, `acm_list_managed_clusters`, `acm_get_managed_cluster`, `acm_hub_health`.
+Available tools: `acm_fleet_status`, `acm_list_managed_clusters`, `acm_get_managed_cluster`, `acm_hub_health`, `acm_list_cluster_resources`, `acm_cluster_resources`, `acm_list_policies`, `acm_get_policy`, `acm_apply_policy`, `acm_remove_policy`, `acm_set_policy_remediation`.
 
 See [docs/acmlab-commands.md](docs/acmlab-commands.md) for the full command and tool reference.
 
