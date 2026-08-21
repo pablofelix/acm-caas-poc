@@ -54,6 +54,9 @@ var (
 	GVRConfigurationPolicy = schema.GroupVersionResource{
 		Group: "policy.open-cluster-management.io", Version: "v1", Resource: "configurationpolicies",
 	}
+	GVRManagedClusterSet = schema.GroupVersionResource{
+		Group: "cluster.open-cluster-management.io", Version: "v1beta2", Resource: "managedclustersets",
+	}
 	GVRManagedClusterSetBinding = schema.GroupVersionResource{
 		Group: "cluster.open-cluster-management.io", Version: "v1beta2", Resource: "managedclustersetbindings",
 	}
