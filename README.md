@@ -8,7 +8,7 @@ PoC that validates Red Hat ACM 2.17 capabilities for a Containers-as-a-Service p
 |----|-------------|--------|
 | UC-01 | Cluster provisioning via ClusterDeployment | Planned |
 | UC-02 | Governance policy management | Implemented |
-| UC-03 | Tenant RBAC isolation via ManifestWork | Planned |
+| UC-03 | Tenant RBAC isolation via ManifestWork | Implemented |
 | UC-04 | Fleet status and observability | Implemented |
 | UC-05 | Hibernate/resume lifecycle (Hive-only) | Planned |
 | UC-06 | Cluster resource monitoring & observability | Implemented |
@@ -38,6 +38,12 @@ bin/acmlab policy list
 bin/acmlab policy apply my-policy --remediation enforce --registries "registry.redhat.io,quay.io"
 bin/acmlab policy status my-policy
 bin/acmlab policy remove my-policy
+
+# 7. Deploy tenant isolation to a spoke
+bin/acmlab tenant deploy team-alpha --cluster infraops1 --team alpha-devs --cpu 8 --memory 16Gi
+bin/acmlab tenant status team-alpha --cluster infraops1
+bin/acmlab tenant list --cluster infraops1
+bin/acmlab tenant remove team-alpha --cluster infraops1
 ```
 
 ## MCP Server
