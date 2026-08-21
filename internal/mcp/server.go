@@ -14,6 +14,7 @@ import (
 	"github.com/pablofelix/acm-caas-poc/internal/fleet"
 	"github.com/pablofelix/acm-caas-poc/internal/monitoring"
 	"github.com/pablofelix/acm-caas-poc/internal/policy"
+	"github.com/pablofelix/acm-caas-poc/internal/tenant"
 )
 
 func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
@@ -32,6 +33,9 @@ func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
 
 	pol := policy.New(c, cfg)
 	registerPolicyTools(s, pol)
+
+	ten := tenant.New(c, cfg)
+	registerTenantTools(s, ten)
 
 	return s
 }
@@ -236,6 +240,87 @@ func splitTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+func registerTenantTools(s *server.MCPServer, ten *tenant.Manager) {
+	s.AddTool(
+		mcp.NewTool("acm_deploy_tenant",
+			mcp.WithDescription("Deploy tenant isolation (namespace, RBAC, network policy, quota) to a spoke cluster via ManifestWork. Idempotent."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Tenant name")),
+			mcp.WithString("cluster", mcp.Required(), mcp.Description("Target spoke cluster")),
+			mcp.WithString("team", mcp.Description("Team/group for RBAC (default: tenant name)")),
+			mcp.WithString("cpu", mcp.Description("CPU request limit (default: 4)")),
+			mcp.WithString("memory", mcp.Description("Memory request limit (default: 8Gi)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			cluster, _ := req.RequireString("cluster")
+			team, _ := req.GetArguments()["team"].(string)
+			cpu, _ := req.GetArguments()["cpu"].(string)
+			mem, _ := req.GetArguments()["memory"].(string)
+			opts := tenant.TenantOpts{
+				Name:        name,
+				Cluster:     cluster,
+				Team:        team,
+				CPULimit:    cpu,
+				MemoryLimit: mem,
+			}
+			if err := ten.Deploy(ctx, opts); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Tenant %s deployed to %s", name, cluster)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_remove_tenant",
+			mcp.WithDescription("Remove tenant isolation from a spoke cluster. Idempotent, no leftovers."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Tenant name")),
+			mcp.WithString("cluster", mcp.Required(), mcp.Description("Target spoke cluster")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			cluster, _ := req.RequireString("cluster")
+			if err := ten.Remove(ctx, name, cluster); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Tenant %s removed from %s", name, cluster)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_list_tenants",
+			mcp.WithDescription("List tenants deployed to a spoke cluster with sync status."),
+			mcp.WithString("cluster", mcp.Required(), mcp.Description("Spoke cluster")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			cluster, _ := req.RequireString("cluster")
+			tenants, err := ten.List(ctx, cluster)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(tenants, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_tenant_status",
+			mcp.WithDescription("Get detailed tenant ManifestWork sync status with per-resource results."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Tenant name")),
+			mcp.WithString("cluster", mcp.Required(), mcp.Description("Spoke cluster")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			cluster, _ := req.RequireString("cluster")
+			ms, err := ten.Status(ctx, name, cluster)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(ms, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
 }
 
 func registerHealthTool(s *server.MCPServer, c *client.Client) {

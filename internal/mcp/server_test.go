@@ -452,3 +452,73 @@ func TestGetPolicyViaMCP(t *testing.T) {
 		t.Errorf("Compliant = %v, want Compliant", info["Compliant"])
 	}
 }
+
+func TestDeployTenantViaMCP(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_deploy_tenant", map[string]interface{}{
+		"name":    "team-alpha",
+		"cluster": "infraops1",
+	})
+	text := extractToolText(t, resp)
+	if text != "Tenant team-alpha deployed to infraops1" {
+		t.Errorf("unexpected response: %s", text)
+	}
+}
+
+func TestRemoveTenantViaMCP(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_remove_tenant", map[string]interface{}{
+		"name":    "nonexistent",
+		"cluster": "infraops1",
+	})
+	text := extractToolText(t, resp)
+	if text != "Tenant nonexistent removed from infraops1" {
+		t.Errorf("unexpected response: %s", text)
+	}
+}
+
+func TestListTenantsViaMCP(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_list_tenants", map[string]interface{}{
+		"cluster": "infraops1",
+	})
+	text := extractToolText(t, resp)
+
+	var tenants []map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &tenants); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(tenants) != 0 {
+		t.Errorf("got %d tenants, want 0", len(tenants))
+	}
+}
+
+func TestTenantStatusViaMCP(t *testing.T) {
+	mw := &unstructured.Unstructured{}
+	mw.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "work.open-cluster-management.io", Version: "v1", Kind: "ManifestWork",
+	})
+	mw.SetName("tenant-team-alpha")
+	mw.SetNamespace("infraops1")
+	mw.SetLabels(map[string]string{"acmlab.redhat.com/tenant": "team-alpha"})
+	mw.Object["status"] = map[string]interface{}{
+		"conditions": []interface{}{
+			map[string]interface{}{"type": "Applied", "status": "True"},
+		},
+	}
+
+	c := fakeClientWithClusters(mw)
+	resp := callTool(t, c, "acm_tenant_status", map[string]interface{}{
+		"name":    "team-alpha",
+		"cluster": "infraops1",
+	})
+	text := extractToolText(t, resp)
+
+	var ms map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &ms); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ms["Applied"] != true {
+		t.Errorf("Applied = %v, want true", ms["Applied"])
+	}
+}
