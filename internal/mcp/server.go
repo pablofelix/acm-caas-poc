@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -12,6 +13,7 @@ import (
 	"github.com/pablofelix/acm-caas-poc/internal/config"
 	"github.com/pablofelix/acm-caas-poc/internal/fleet"
 	"github.com/pablofelix/acm-caas-poc/internal/monitoring"
+	"github.com/pablofelix/acm-caas-poc/internal/policy"
 )
 
 func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
@@ -27,6 +29,9 @@ func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
 
 	mon := monitoring.New(c, cfg)
 	registerMonitoringTools(s, mon)
+
+	pol := policy.New(c, cfg)
+	registerPolicyTools(s, pol)
 
 	return s
 }
@@ -119,6 +124,118 @@ func registerMonitoringTools(s *server.MCPServer, mon *monitoring.Monitor) {
 			return mcp.NewToolResultText(string(data)), nil
 		},
 	)
+}
+
+func registerPolicyTools(s *server.MCPServer, pol *policy.Manager) {
+	s.AddTool(
+		mcp.NewTool("acm_list_policies",
+			mcp.WithDescription("List governance policies with compliance status."),
+			mcp.WithString("namespace", mcp.Description("Policy namespace (default: global-set)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			ns, _ := req.GetArguments()["namespace"].(string)
+			policies, err := pol.List(ctx, ns)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(policies, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_get_policy",
+			mcp.WithDescription("Get detailed policy info with per-cluster compliance status."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Policy name")),
+			mcp.WithString("namespace", mcp.Description("Policy namespace (default: global-set)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			ns, _ := req.GetArguments()["namespace"].(string)
+			info, err := pol.Get(ctx, name, ns)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(info, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_apply_policy",
+			mcp.WithDescription("Create a governance policy with placement targeting clusters by label. Idempotent."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Policy name")),
+			mcp.WithString("namespace", mcp.Description("Policy namespace (default: global-set)")),
+			mcp.WithString("remediation", mcp.Description("inform or enforce (default: inform)")),
+			mcp.WithString("registries", mcp.Description("Comma-separated list of allowed container registries")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			ns, _ := req.GetArguments()["namespace"].(string)
+			remediation, _ := req.GetArguments()["remediation"].(string)
+			registriesStr, _ := req.GetArguments()["registries"].(string)
+
+			opts := policy.PolicyOpts{
+				Name:              name,
+				Namespace:         ns,
+				RemediationAction: remediation,
+			}
+			if registriesStr != "" {
+				for _, r := range splitTrim(registriesStr) {
+					opts.AllowedRegistries = append(opts.AllowedRegistries, r)
+				}
+			}
+			if err := pol.Apply(ctx, opts); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Policy %s applied successfully", name)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_remove_policy",
+			mcp.WithDescription("Remove a policy and its placement resources. Idempotent, no leftovers."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Policy name")),
+			mcp.WithString("namespace", mcp.Description("Policy namespace (default: global-set)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			ns, _ := req.GetArguments()["namespace"].(string)
+			if err := pol.Remove(ctx, name, ns); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Policy %s removed successfully", name)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_set_policy_remediation",
+			mcp.WithDescription("Change a policy's remediation action between inform and enforce."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Policy name")),
+			mcp.WithString("action", mcp.Required(), mcp.Description("inform or enforce")),
+			mcp.WithString("namespace", mcp.Description("Policy namespace (default: global-set)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			action, _ := req.RequireString("action")
+			ns, _ := req.GetArguments()["namespace"].(string)
+			if err := pol.SetRemediation(ctx, name, ns, action); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Policy %s remediation set to %s", name, action)), nil
+		},
+	)
+}
+
+func splitTrim(s string) []string {
+	var result []string
+	for _, part := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func registerHealthTool(s *server.MCPServer, c *client.Client) {

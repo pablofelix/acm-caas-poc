@@ -34,6 +34,7 @@ func main() {
 	root.AddCommand(versionCmd())
 	root.AddCommand(fleetCmd())
 	root.AddCommand(monitorCmd())
+	root.AddCommand(policyCmd())
 	root.AddCommand(mcpCmd())
 
 	if err := root.Execute(); err != nil {

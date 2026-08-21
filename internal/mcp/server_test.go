@@ -28,6 +28,9 @@ func fakeClientWithClusters(clusters ...*unstructured.Unstructured) *client.Clie
 			client.GVRClusterDeployment:  "ClusterDeploymentList",
 			client.GVRManifestWork:       "ManifestWorkList",
 			client.GVRManagedClusterInfo: "ManagedClusterInfoList",
+			client.GVRPolicy:             "PolicyList",
+			client.GVRPlacement:          "PlacementList",
+			client.GVRPlacementBinding:   "PlacementBindingList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -330,5 +333,122 @@ func TestHubHealthAllOK(t *testing.T) {
 		if status != "OK" {
 			t.Errorf("check %s = %s, want OK", resource, status)
 		}
+	}
+}
+
+func TestListPoliciesEmpty(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_list_policies", nil)
+	text := extractToolText(t, resp)
+
+	var policies []map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &policies); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(policies) != 0 {
+		t.Errorf("got %d policies, want 0", len(policies))
+	}
+}
+
+func TestListPoliciesWithExisting(t *testing.T) {
+	pol := &unstructured.Unstructured{}
+	pol.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "policy.open-cluster-management.io", Version: "v1", Kind: "Policy",
+	})
+	pol.SetName("test-policy")
+	pol.SetNamespace("open-cluster-management-global-set")
+	pol.Object["spec"] = map[string]interface{}{
+		"remediationAction": "enforce",
+		"disabled":          false,
+	}
+
+	c := fakeClientWithClusters(pol)
+	resp := callTool(t, c, "acm_list_policies", nil)
+	text := extractToolText(t, resp)
+
+	var policies []map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &policies); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(policies) != 1 {
+		t.Fatalf("got %d policies, want 1", len(policies))
+	}
+	if policies[0]["Name"] != "test-policy" {
+		t.Errorf("Name = %v, want test-policy", policies[0]["Name"])
+	}
+}
+
+func TestApplyPolicyViaMCP(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_apply_policy", map[string]interface{}{
+		"name":        "my-policy",
+		"remediation": "inform",
+	})
+	text := extractToolText(t, resp)
+	if text != "Policy my-policy applied successfully" {
+		t.Errorf("unexpected response: %s", text)
+	}
+}
+
+func TestRemovePolicyViaMCP(t *testing.T) {
+	c := fakeClientWithClusters()
+	resp := callTool(t, c, "acm_remove_policy", map[string]interface{}{
+		"name": "nonexistent",
+	})
+	text := extractToolText(t, resp)
+	if text != "Policy nonexistent removed successfully" {
+		t.Errorf("unexpected response: %s", text)
+	}
+}
+
+func TestSetPolicyRemediationViaMCP(t *testing.T) {
+	pol := &unstructured.Unstructured{}
+	pol.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "policy.open-cluster-management.io", Version: "v1", Kind: "Policy",
+	})
+	pol.SetName("my-policy")
+	pol.SetNamespace("open-cluster-management-global-set")
+	pol.Object["spec"] = map[string]interface{}{
+		"remediationAction": "inform",
+	}
+
+	c := fakeClientWithClusters(pol)
+	resp := callTool(t, c, "acm_set_policy_remediation", map[string]interface{}{
+		"name":   "my-policy",
+		"action": "enforce",
+	})
+	text := extractToolText(t, resp)
+	if text != "Policy my-policy remediation set to enforce" {
+		t.Errorf("unexpected response: %s", text)
+	}
+}
+
+func TestGetPolicyViaMCP(t *testing.T) {
+	pol := &unstructured.Unstructured{}
+	pol.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "policy.open-cluster-management.io", Version: "v1", Kind: "Policy",
+	})
+	pol.SetName("my-policy")
+	pol.SetNamespace("open-cluster-management-global-set")
+	pol.Object["spec"] = map[string]interface{}{
+		"remediationAction": "enforce",
+		"disabled":          false,
+	}
+	pol.Object["status"] = map[string]interface{}{
+		"compliant": "Compliant",
+	}
+
+	c := fakeClientWithClusters(pol)
+	resp := callTool(t, c, "acm_get_policy", map[string]interface{}{
+		"name": "my-policy",
+	})
+	text := extractToolText(t, resp)
+
+	var info map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &info); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if info["Compliant"] != "Compliant" {
+		t.Errorf("Compliant = %v, want Compliant", info["Compliant"])
 	}
 }
