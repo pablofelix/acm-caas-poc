@@ -299,6 +299,10 @@ func parseClusterInfo(obj map[string]interface{}) *ClusterInfo {
 	}
 	if status, ok := obj["status"].(map[string]interface{}); ok {
 		info.Installed, _ = status["installed"].(bool)
+		if !info.Installed {
+			_, hasTimestamp := status["installedTimestamp"]
+			info.Installed = hasTimestamp
+		}
 		conditions, _ := status["conditions"].([]interface{})
 		for _, raw := range conditions {
 			cond, ok := raw.(map[string]interface{})
