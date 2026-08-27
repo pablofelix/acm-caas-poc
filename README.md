@@ -6,7 +6,7 @@ PoC that validates Red Hat ACM 2.17 capabilities for a Containers-as-a-Service p
 
 | UC | Description | Status |
 |----|-------------|--------|
-| UC-01 | Cluster provisioning via ClusterDeployment (IBM Cloud) | Implemented |
+| UC-01 | Cluster provisioning via ClusterDeployment (multi-platform) | Implemented |
 | UC-02 | Governance policy management | Implemented |
 | UC-03 | Tenant RBAC isolation via ManifestWork | Implemented |
 | UC-04 | Fleet status and observability | Implemented |
@@ -28,7 +28,7 @@ go build -o bin/acmlab ./cmd/acmlab/
 bin/acmlab fleet list
 
 # 4. Get cluster details
-bin/acmlab fleet status infraops1
+bin/acmlab fleet status spoke1
 
 # 5. Monitor cluster resources
 bin/acmlab monitor list
@@ -40,10 +40,10 @@ bin/acmlab policy status my-policy
 bin/acmlab policy remove my-policy
 
 # 7. Deploy tenant isolation to a spoke
-bin/acmlab tenant deploy team-alpha --cluster infraops1 --team alpha-devs --cpu 8 --memory 16Gi
-bin/acmlab tenant status team-alpha --cluster infraops1
-bin/acmlab tenant list --cluster infraops1
-bin/acmlab tenant remove team-alpha --cluster infraops1
+bin/acmlab tenant deploy team-alpha --cluster spoke1 --team alpha-devs --cpu 8 --memory 16Gi
+bin/acmlab tenant status team-alpha --cluster spoke1
+bin/acmlab tenant list --cluster spoke1
+bin/acmlab tenant remove team-alpha --cluster spoke1
 
 # 8. Provision a spoke cluster (IBM Cloud, AWS, GCP, Azure)
 bin/acmlab provision image-sets
