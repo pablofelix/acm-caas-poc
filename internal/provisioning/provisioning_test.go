@@ -26,10 +26,12 @@ func fakeClient(objs ...runtime.Object) *client.Client {
 	scheme := runtime.NewScheme()
 	fake := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{
-			client.GVRClusterDeployment: "ClusterDeploymentList",
-			client.GVRClusterImageSet:   "ClusterImageSetList",
-			client.GVRNamespace:         "NamespaceList",
-			client.GVRSecret:            "SecretList",
+			client.GVRClusterDeployment:      "ClusterDeploymentList",
+			client.GVRClusterImageSet:        "ClusterImageSetList",
+			client.GVRManagedCluster:         "ManagedClusterList",
+			client.GVRKlusterletAddonConfig:  "KlusterletAddonConfigList",
+			client.GVRNamespace:              "NamespaceList",
+			client.GVRSecret:                 "SecretList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -93,6 +95,20 @@ func TestCreateCreatesAllResources(t *testing.T) {
 	ibm, _ := platform["ibmcloud"].(map[string]interface{})
 	if ibm["region"] != "us-south" {
 		t.Errorf("region = %v, want us-south", ibm["region"])
+	}
+
+	mc, err := c.Get(context.Background(), client.GVRManagedCluster, "", "spoke1")
+	if err != nil {
+		t.Fatalf("ManagedCluster not created: %v", err)
+	}
+	mcSpec, _ := mc.Object["spec"].(map[string]interface{})
+	if mcSpec["hubAcceptsClient"] != true {
+		t.Error("expected hubAcceptsClient = true")
+	}
+
+	_, err = c.Get(context.Background(), client.GVRKlusterletAddonConfig, "spoke1", "spoke1")
+	if err != nil {
+		t.Fatalf("KlusterletAddonConfig not created: %v", err)
 	}
 }
 

@@ -218,6 +218,66 @@ func buildManifestsSecretFromYAMLs(namespace string, yamls map[string]string) *u
 	}
 }
 
+func buildManagedCluster(name, platform string) *unstructured.Unstructured {
+	cloudLabel := "Other"
+	switch platform {
+	case "ibmcloud":
+		cloudLabel = "IBM"
+	case "aws":
+		cloudLabel = "Amazon"
+	case "gcp":
+		cloudLabel = "Google"
+	case "azure":
+		cloudLabel = "Azure"
+	}
+
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "cluster.open-cluster-management.io/v1",
+			"kind":       "ManagedCluster",
+			"metadata": map[string]interface{}{
+				"name": name,
+				"labels": map[string]interface{}{
+					"cloud":                                            cloudLabel,
+					"vendor":                                           "OpenShift",
+					"cluster.open-cluster-management.io/clusterset":    "default",
+					"acmlab.redhat.com/managed":                        "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"hubAcceptsClient": true,
+			},
+		},
+	}
+}
+
+func buildKlusterletAddonConfig(name string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "agent.open-cluster-management.io/v1",
+			"kind":       "KlusterletAddonConfig",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": name,
+			},
+			"spec": map[string]interface{}{
+				"applicationManager": map[string]interface{}{
+					"enabled": true,
+				},
+				"certPolicyController": map[string]interface{}{
+					"enabled": true,
+				},
+				"policyController": map[string]interface{}{
+					"enabled": true,
+				},
+				"searchCollector": map[string]interface{}{
+					"enabled": true,
+				},
+			},
+		},
+	}
+}
+
 func buildSSHPrivateKeySecret(namespace, sshPrivateKey string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{

@@ -155,6 +155,16 @@ func (m *Manager) Create(ctx context.Context, opts ClusterOpts) error {
 		return fmt.Errorf("creating ClusterDeployment %s: %w", opts.Name, err)
 	}
 
+	mc := buildManagedCluster(opts.Name, opts.Platform)
+	if err := m.createIfNotExists(ctx, client.GVRManagedCluster, "", mc); err != nil {
+		return fmt.Errorf("creating ManagedCluster %s: %w", opts.Name, err)
+	}
+
+	kac := buildKlusterletAddonConfig(opts.Name)
+	if err := m.createIfNotExists(ctx, client.GVRKlusterletAddonConfig, opts.Name, kac); err != nil {
+		return fmt.Errorf("creating KlusterletAddonConfig %s: %w", opts.Name, err)
+	}
+
 	return nil
 }
 
