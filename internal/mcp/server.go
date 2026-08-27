@@ -14,6 +14,7 @@ import (
 	"github.com/pablofelix/acm-caas-poc/internal/fleet"
 	"github.com/pablofelix/acm-caas-poc/internal/monitoring"
 	"github.com/pablofelix/acm-caas-poc/internal/policy"
+	"github.com/pablofelix/acm-caas-poc/internal/provisioning"
 	"github.com/pablofelix/acm-caas-poc/internal/tenant"
 )
 
@@ -36,6 +37,9 @@ func NewServer(c *client.Client, cfg config.Config) *server.MCPServer {
 
 	ten := tenant.New(c, cfg)
 	registerTenantTools(s, ten)
+
+	prov := provisioning.New(c, cfg)
+	registerProvisioningTools(s, prov, cfg)
 
 	return s
 }
@@ -318,6 +322,100 @@ func registerTenantTools(s *server.MCPServer, ten *tenant.Manager) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			data, _ := json.MarshalIndent(ms, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+}
+
+func registerProvisioningTools(s *server.MCPServer, prov *provisioning.Manager, cfg config.Config) {
+	s.AddTool(
+		mcp.NewTool("acm_provision_create",
+			mcp.WithDescription("Create a spoke cluster via Hive ClusterDeployment. Requires pull secret. Idempotent. For IBM Cloud, IAM credentials are auto-generated."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Cluster name")),
+			mcp.WithString("platform", mcp.Description("Cloud platform: ibmcloud, aws, gcp, azure (default: from config)")),
+			mcp.WithString("region", mcp.Description("Cloud region (default: from config)")),
+			mcp.WithString("image_set", mcp.Description("ClusterImageSet name (default: from config)")),
+			mcp.WithString("worker_type", mcp.Description("Worker instance type (default: from config)")),
+			mcp.WithString("workers", mcp.Description("Number of worker nodes (default: 2)")),
+			mcp.WithString("pull_secret", mcp.Required(), mcp.Description("Pull secret JSON content")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			pullSecret, _ := req.RequireString("pull_secret")
+			platform, _ := req.GetArguments()["platform"].(string)
+			region, _ := req.GetArguments()["region"].(string)
+			imageSet, _ := req.GetArguments()["image_set"].(string)
+			workerType, _ := req.GetArguments()["worker_type"].(string)
+
+			opts := provisioning.ClusterOpts{
+				Name:       name,
+				Platform:   platform,
+				Region:     region,
+				ImageSet:   imageSet,
+				WorkerType: workerType,
+				PullSecret: pullSecret,
+			}
+			if err := prov.Create(ctx, opts); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Cluster %s creation initiated. Hive will provision on IBM Cloud.", name)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_provision_destroy",
+			mcp.WithDescription("Destroy a spoke cluster — deletes ClusterDeployment, Hive deprovisions infrastructure. Idempotent."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Cluster name")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			if err := prov.Destroy(ctx, name); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Cluster %s destruction initiated", name)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_provision_status",
+			mcp.WithDescription("Get ClusterDeployment provisioning status with conditions and failure info."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Cluster name")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, _ := req.RequireString("name")
+			info, err := prov.Status(ctx, name)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(info, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_provision_list",
+			mcp.WithDescription("List clusters provisioned via acmlab with status."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			clusters, err := prov.List(ctx)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(clusters, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("acm_list_image_sets",
+			mcp.WithDescription("List available ClusterImageSets for provisioning."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			sets, err := prov.ListImageSets(ctx)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			data, _ := json.MarshalIndent(sets, "", "  ")
 			return mcp.NewToolResultText(string(data)), nil
 		},
 	)

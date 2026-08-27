@@ -3,4 +3,5 @@ style.md
 *.exe
 vendor/
 bin/
+/acmlab
 docs/superpowers/

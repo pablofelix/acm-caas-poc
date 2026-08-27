@@ -6,7 +6,7 @@ PoC that validates Red Hat ACM 2.17 capabilities for a Containers-as-a-Service p
 
 | UC | Description | Status |
 |----|-------------|--------|
-| UC-01 | Cluster provisioning via ClusterDeployment | Planned |
+| UC-01 | Cluster provisioning via ClusterDeployment (IBM Cloud) | Implemented |
 | UC-02 | Governance policy management | Implemented |
 | UC-03 | Tenant RBAC isolation via ManifestWork | Implemented |
 | UC-04 | Fleet status and observability | Implemented |
@@ -44,6 +44,14 @@ bin/acmlab tenant deploy team-alpha --cluster infraops1 --team alpha-devs --cpu 
 bin/acmlab tenant status team-alpha --cluster infraops1
 bin/acmlab tenant list --cluster infraops1
 bin/acmlab tenant remove team-alpha --cluster infraops1
+
+# 8. Provision a spoke cluster (IBM Cloud, AWS, GCP, Azure)
+bin/acmlab provision image-sets
+bin/acmlab provision create spoke1 --pull-secret ~/pull-secret.json --region us-south
+bin/acmlab provision create spoke2 --platform aws --pull-secret ~/pull-secret.json --region us-east-1
+bin/acmlab provision status spoke1
+bin/acmlab provision list
+bin/acmlab provision destroy spoke1
 ```
 
 ## MCP Server
@@ -68,7 +76,7 @@ Register in Claude Code's MCP config:
 }
 ```
 
-Available tools: `acm_fleet_status`, `acm_list_managed_clusters`, `acm_get_managed_cluster`, `acm_hub_health`, `acm_list_cluster_resources`, `acm_cluster_resources`, `acm_list_policies`, `acm_get_policy`, `acm_apply_policy`, `acm_remove_policy`, `acm_set_policy_remediation`.
+Available tools: `acm_fleet_status`, `acm_list_managed_clusters`, `acm_get_managed_cluster`, `acm_hub_health`, `acm_list_cluster_resources`, `acm_cluster_resources`, `acm_list_policies`, `acm_get_policy`, `acm_apply_policy`, `acm_remove_policy`, `acm_set_policy_remediation`, `acm_provision_create`, `acm_provision_destroy`, `acm_provision_status`, `acm_provision_list`, `acm_list_image_sets`.
 
 See [docs/acmlab-commands.md](docs/acmlab-commands.md) for the full command and tool reference.
 

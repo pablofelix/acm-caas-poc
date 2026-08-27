@@ -11,6 +11,7 @@ type Config struct {
 	Kubeconfig string
 	HubContext string
 
+	Platform       string
 	IBMCloudAPIKey string
 	IBMCloudRegion string
 
@@ -31,9 +32,10 @@ func LoadFromEnv() (Config, error) {
 	cfg := Config{
 		Kubeconfig:     envOr("KUBECONFIG", ""),
 		HubContext:     envOr("ACM_HUB_CONTEXT", ""),
+		Platform:       envOr("ACM_PLATFORM", "ibmcloud"),
 		IBMCloudAPIKey: envOr("IBMCLOUD_API_KEY", ""),
 		IBMCloudRegion: envOr("IBMCLOUD_REGION", "us-south"),
-		BaseDomain:     envOr("ACM_BASE_DOMAIN", "infraops1.ibm.rh-ods.com"),
+		BaseDomain:     envOr("ACM_BASE_DOMAIN", ""),
 		ClusterImageSet: envOr("ACM_CLUSTER_IMAGE_SET", "img4.22.9-multi-appsub"),
 		DefaultWorkerType: envOr("ACM_DEFAULT_WORKER_TYPE", "bx2-4x16"),
 		DefaultMasterType: envOr("ACM_DEFAULT_MASTER_TYPE", "bx2-8x32"),
