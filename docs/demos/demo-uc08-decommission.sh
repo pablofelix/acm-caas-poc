@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CLUSTER="${1:-spoke2}"
-OWNER="${2:-pestevez@redhat.com}"
+OWNER="${2:-admin@example.com}"
 
 echo "=== UC-08: Cluster Decommissioning Lifecycle ==="
 

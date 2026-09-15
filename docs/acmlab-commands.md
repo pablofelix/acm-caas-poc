@@ -495,7 +495,7 @@ Options:
 ```
 $ acmlab upgrade list
 CLUSTER              VERSION      CHANNEL          METHOD       AVAILABLE
-infraops1            4.21.29      stable-4.21      manifestwork 4.21.30, 4.21.31
+hub-cluster          4.21.29      stable-4.21      manifestwork 4.21.30, 4.21.31
 spoke2               4.22.9       stable-4.22      hive         4.22.10, 4.22.11, 4.22.12
 ```
 
@@ -543,11 +543,11 @@ Options:
 - `--kubeconfig-path` — spoke kubeconfig for imported clusters
 
 ```
-$ acmlab decommission start spoke2 --owner "pestevez@redhat.com"
+$ acmlab decommission start spoke2 --owner "admin@example.com"
 {
   "clusterName": "spoke2",
   "phase": "audited",
-  "owner": "pestevez@redhat.com",
+  "owner": "admin@example.com",
   "deadline": "2026-09-28T15:10:16Z",
   "audit": {
     "nodeCount": 5,
@@ -589,7 +589,7 @@ Shows current phase, owner, deadline, audit data, and full history.
 $ acmlab decommission status spoke2
 Cluster:  spoke2
 Phase:    audited
-Owner:    pestevez@redhat.com
+Owner:    admin@example.com
 Deadline: 2026-09-28T15:10:16Z
 Nodes:    5
 CPU:      32
@@ -611,7 +611,7 @@ Options:
 ```
 $ acmlab decommission list
 CLUSTER              PHASE        OWNER                          DEADLINE
-spoke2               audited      pestevez@redhat.com            2026-09-28T15:10:16Z
+spoke2               audited      admin@example.com            2026-09-28T15:10:16Z
 ```
 
 #### `acmlab decommission cancel <cluster>`
