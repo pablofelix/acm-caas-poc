@@ -1768,6 +1768,258 @@ Configure Thanos retention settings on the MCO.
 - `--block-duration <duration>`: TSDB block duration (e.g. 2h)
 - `--delete-delay <duration>`: deletion delay for blocks (e.g. 48h)
 
+### Placement Tolerations (UC-34)
+
+#### `acmlab fleet add-taint <cluster>`
+
+Add a taint to a managed cluster. Taints prevent workloads from scheduling unless the Placement tolerates them.
+
+Options:
+- `--key`: taint key (required)
+- `--value`: taint value
+- `--effect`: taint effect — NoSchedule, PreferNoSchedule, NoExecute (default: NoSchedule)
+
+```
+$ acmlab fleet add-taint gpu-spoke1 --key gpu-workloads --value reserved --effect NoSchedule
+Taint gpu-workloads=reserved:NoSchedule added to gpu-spoke1
+```
+
+#### `acmlab fleet remove-taint <cluster>`
+
+Remove a taint from a managed cluster.
+
+Options:
+- `--key`: taint key (required)
+
+#### `acmlab fleet list-taints <cluster>`
+
+List all taints on a managed cluster.
+
+Options:
+- `--json`: output as JSON
+
+```
+$ acmlab fleet list-taints gpu-spoke1
+KEY                            VALUE                EFFECT
+gpu-workloads                  reserved             NoSchedule
+```
+
+#### `acmlab fleet create-tolerant-placement <name>`
+
+Create a Placement that tolerates specific taints, allowing scheduling on tainted clusters.
+
+Options:
+- `--tolerate`: tolerations in key=value format (required, repeatable)
+- `--namespace`: namespace for the Placement
+- `--cluster-set`: ClusterSets to scope the Placement (repeatable)
+
+```
+$ acmlab fleet create-tolerant-placement ml-pipeline --tolerate gpu-workloads=reserved --namespace default --cluster-set gpu-set
+Tolerant placement ml-pipeline created
+```
+
+### Cluster Templating (UC-53)
+
+#### `acmlab provision template-create <name>`
+
+Create a ClusterDeploymentCustomization with installConfigPatches for standardised cluster profiles.
+
+Options:
+- `--patch`: JSON patch entries (required, repeatable)
+
+```
+$ acmlab provision template-create small-profile --patch '{"op":"replace","path":"/compute/0/replicas","value":"2"}'
+Template small-profile created
+```
+
+#### `acmlab provision template-get <name>`
+
+Get a cluster template's details including patches.
+
+#### `acmlab provision template-list`
+
+List all cluster templates.
+
+Options:
+- `--json`: output as JSON
+
+#### `acmlab provision template-remove <name>`
+
+Remove a cluster template.
+
+#### `acmlab provision template-apply <cluster>`
+
+Apply a template to a ClusterDeployment.
+
+Options:
+- `--template`: template name (required)
+
+### Global ManagedClusterSet (UC-54)
+
+#### `acmlab clusterset global-enable`
+
+Create a global ManagedClusterSet with selectorType=LabelSelector and empty matchLabels, matching all clusters. Labels clusters with acmlab.redhat.com/global=true.
+
+```
+$ acmlab clusterset global-enable
+Global ClusterSet "global" enabled (matches all clusters)
+```
+
+#### `acmlab clusterset global-bind <namespace>`
+
+Bind the global ClusterSet to a namespace, enabling Placements in that namespace to use it.
+
+#### `acmlab clusterset global-unbind <namespace>`
+
+Remove the global ClusterSet binding from a namespace.
+
+#### `acmlab clusterset global-status`
+
+Show the global ClusterSet status: bound namespaces and matched cluster count.
+
+Options:
+- `--json`: output as JSON
+
+### ManifestWork Ordering (UC-55)
+
+#### `acmlab workorder create-ordered <name>`
+
+Create a ManifestWork with ordinal-based manifest sequencing. Lower ordinal values are applied first, enabling dependency-aware deployment (e.g. namespace before deployment).
+
+Options:
+- `--cluster`: target cluster (required)
+- `--manifests`: path to ordered manifests JSON file (required)
+
+The JSON file contains an array of objects with `ordinal` (int) and `object` (Kubernetes manifest) fields.
+
+```
+$ acmlab workorder create-ordered app-stack --cluster spoke1 --manifests /tmp/ordered-manifests.json
+Ordered ManifestWork app-stack created on spoke1 with 3 manifests
+```
+
+#### `acmlab workorder get-ordered <name>`
+
+Get status of an ordered ManifestWork.
+
+Options:
+- `--cluster`: target cluster (required)
+
+#### `acmlab workorder list-ordered`
+
+List ordered ManifestWorks on a cluster.
+
+Options:
+- `--cluster`: target cluster (required)
+- `--json`: output as JSON
+
+#### `acmlab workorder remove-ordered <name>`
+
+Remove an ordered ManifestWork from a cluster.
+
+Options:
+- `--cluster`: target cluster (required)
+
+### Cluster Discovery — OCM (UC-56)
+
+#### `acmlab discovery enable`
+
+Enable cluster discovery by creating a DiscoveryConfig (discovery.open-cluster-management.io/v1) and a Secret with the OCM API token. Discovers OpenShift clusters registered with Red Hat.
+
+Options:
+- `--namespace`: namespace for discovery resources (default: open-cluster-management)
+- `--token`: OpenShift Cluster Manager API token (required — obtain via `ocm login --use-device-code` then `ocm token`)
+- `--last-active`: discover clusters active within N days (default: 7)
+- `--versions`: filter by OpenShift versions (e.g. 4.14,4.15)
+
+```
+$ acmlab discovery enable --namespace open-cluster-management --token $OCM_TOKEN
+Enabling cluster discovery in open-cluster-management...
+Discovery enabled. Clusters will appear as DiscoveredCluster resources.
+```
+
+#### `acmlab discovery disable`
+
+Disable cluster discovery and remove the DiscoveryConfig and Secret.
+
+Options:
+- `--namespace`: namespace for discovery resources (default: open-cluster-management)
+
+#### `acmlab discovery list`
+
+List discovered clusters (DiscoveredCluster CRDs populated by the discovery operator).
+
+Options:
+- `--namespace`: namespace for discovery resources (default: open-cluster-management)
+- `--json`: output as JSON
+
+```
+$ acmlab discovery list --namespace open-cluster-management
+NAME                      CLOUD      VERSION      REGION          STATUS
+my-rosa-cluster           AWS        4.15.2       us-east-1       Active
+```
+
+#### `acmlab discovery import <name>`
+
+Import a discovered cluster into ACM by creating a ManagedCluster and KlusterletAddonConfig.
+
+Options:
+- `--namespace`: namespace where cluster was discovered (default: open-cluster-management)
+
+#### `acmlab discovery status`
+
+Show discovery configuration status: namespace, credential, last active filter, cluster count.
+
+Options:
+- `--namespace`: namespace for discovery resources (default: open-cluster-management)
+- `--json`: output as JSON
+
+### Cloud-Native Discovery (UC-57)
+
+#### `acmlab discovery scan`
+
+Scan cloud providers for clusters not yet managed by ACM. Supports AWS (EKS + ROSA via aws/rosa CLIs) and IBM Cloud (IKS + ROKS via ibmcloud CLI). Cross-references results with ACM ManagedClusters.
+
+Options:
+- `--provider`: cloud provider — aws, ibmcloud (default: scan all)
+- `--region`: filter by region
+- `--json`: output as JSON
+
+```
+$ acmlab discovery scan --provider aws --region us-east-1
+NAME                      PROVIDER   TYPE     REGION          VERSION      STATUS     MANAGED
+my-eks-cluster            aws        EKS      us-east-1       1.29         ACTIVE
+my-rosa-cluster           aws        ROSA     us-east-1       4.15.2       ready      yes
+```
+
+#### `acmlab discovery auto-import <name>`
+
+Import a cloud-discovered cluster into ACM.
+
+Options:
+- `--provider`: cloud provider — aws, ibmcloud (required)
+
+#### `acmlab discovery scan-kubeconfigs`
+
+Scan a directory of kubeconfig files to discover clusters not managed by ACM. Works for any cluster type (OpenShift, EKS, GKE, AKS, vanilla Kubernetes). Matches by name and server URL.
+
+Options:
+- `--dir`: directory to scan (default: ~/.kube/)
+- `--json`: output as JSON
+
+```
+$ acmlab discovery scan-kubeconfigs --dir ~/.kube/
+NAME                      SERVER                                    FILE                     MANAGED
+my-cluster                https://api.my-cluster.example.com:6443   ~/.kube/my-cluster.yaml  no
+```
+
+#### `acmlab discovery auto-import-kubeconfig`
+
+Import a cluster from a kubeconfig file into ACM.
+
+Options:
+- `--name`: cluster name (required)
+- `--kubeconfig`: path to kubeconfig file (required)
+
 ### Batch Operations
 
 All commands that take a single cluster name also accept multiple names and a `--from-file` flag.
@@ -1896,3 +2148,29 @@ Starts the MCP server on stdio. Register as `acmlab` in Claude Code's MCP config
 | `acm_backup_status` | UC-36 | Get hub backup schedule status and last backup |
 | `acm_list_backups` | UC-36 | List completed backup/restore operations |
 | `acm_restore_backup` | UC-36 | Trigger hub restore from a backup |
+| `acm_add_taint` | UC-34 | Add a taint to a managed cluster |
+| `acm_remove_taint` | UC-34 | Remove a taint from a managed cluster |
+| `acm_list_taints` | UC-34 | List taints on a managed cluster |
+| `acm_create_tolerant_placement` | UC-34 | Create a Placement with tolerations for tainted clusters |
+| `acm_template_create` | UC-53 | Create a ClusterDeploymentCustomization template |
+| `acm_template_get` | UC-53 | Get template details |
+| `acm_template_list` | UC-53 | List all cluster templates |
+| `acm_template_remove` | UC-53 | Remove a cluster template |
+| `acm_template_apply` | UC-53 | Apply a template to a ClusterDeployment |
+| `acm_global_enable` | UC-54 | Enable the global ManagedClusterSet |
+| `acm_global_bind` | UC-54 | Bind global set to a namespace |
+| `acm_global_unbind` | UC-54 | Unbind global set from a namespace |
+| `acm_global_status` | UC-54 | Show global ClusterSet status |
+| `acm_create_ordered_work` | UC-55 | Create ManifestWork with ordinal-based sequencing |
+| `acm_get_ordered_work` | UC-55 | Get ordered ManifestWork status |
+| `acm_list_ordered_work` | UC-55 | List ordered ManifestWorks on a cluster |
+| `acm_remove_ordered_work` | UC-55 | Remove an ordered ManifestWork |
+| `acm_discovery_enable` | UC-56 | Enable OCM-based cluster discovery |
+| `acm_discovery_disable` | UC-56 | Disable cluster discovery |
+| `acm_discovery_list` | UC-56 | List discovered clusters |
+| `acm_discovery_import` | UC-56 | Import a discovered cluster into ACM |
+| `acm_discovery_status` | UC-56 | Show discovery configuration status |
+| `acm_discovery_scan` | UC-57 | Scan cloud providers for unmanaged clusters |
+| `acm_discovery_auto_import` | UC-57 | Import a cloud-discovered cluster |
+| `acm_discovery_scan_kubeconfigs` | UC-57 | Scan kubeconfig files for unmanaged clusters |
+| `acm_discovery_auto_import_kubeconfig` | UC-57 | Import a cluster from kubeconfig |

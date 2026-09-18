@@ -2337,6 +2337,172 @@ New `internal/migration/` package: CreatePlan, Replicate, ValidateTarget, Cutove
 
 ---
 
+## UC-34: Placement tolerations and taints
+
+**Feature**: Taint-based workload exclusion and toleration-based scheduling for managed clusters
+
+As a platform operator
+I want to taint clusters to prevent general workloads from scheduling on them
+So that I can reserve specialised clusters (e.g. GPU nodes) for approved workloads only
+
+### Scenario: Taint a GPU cluster and schedule tolerant workloads
+
+**Given** a managed cluster gpu-spoke1 with GPU resources
+**When** I add a taint `gpu-workloads=reserved:NoSchedule`
+**Then** standard Placements skip this cluster
+**And** only Placements with a matching toleration schedule workloads to it
+
+### ACM types
+
+`cluster.open-cluster-management.io/v1.ManagedCluster` — spec.taints[]
+`cluster.open-cluster-management.io/v1beta1.Placement` — spec.tolerations[]
+
+### Package
+
+`internal/fleet/taints.go` — AddTaint, RemoveTaint, ListTaints, CreateTolerantPlacement
+
+---
+
+## UC-53: Cluster templating via ClusterDeploymentCustomization
+
+**Feature**: Reusable cluster profiles using Hive ClusterDeploymentCustomization CRDs
+
+As a platform operator
+I want to define standard cluster profiles (small, medium, large)
+So that teams can provision clusters with consistent configurations
+
+### Scenario: Create and apply a cluster template
+
+**Given** a template "small-profile" with installConfigPatches setting 2 worker replicas
+**When** I apply the template to a ClusterDeployment
+**Then** the cluster is provisioned with the patched configuration
+
+### ACM types
+
+`hive.openshift.io/v1.ClusterDeploymentCustomization` — spec.installConfigPatches[]
+
+### Package
+
+`internal/provisioning/templating.go` — CreateTemplate, GetTemplate, ListTemplates, RemoveTemplate, ApplyTemplate
+
+---
+
+## UC-54: Global ManagedClusterSet
+
+**Feature**: A single ClusterSet that automatically includes all managed clusters
+
+As a platform operator
+I want a global ClusterSet that matches every cluster without manual assignment
+So that cross-team Placements can target the entire fleet
+
+### Scenario: Enable global ClusterSet and bind to namespaces
+
+**Given** a fleet with 20 managed clusters across multiple teams
+**When** I enable the global ClusterSet
+**Then** a ManagedClusterSet with selectorType=LabelSelector and empty matchLabels is created
+**And** it matches all clusters automatically
+**And** I can bind it to team namespaces for Placement use
+
+### ACM types
+
+`cluster.open-cluster-management.io/v1beta2.ManagedClusterSet` — spec.clusterSelector.selectorType=LabelSelector
+`cluster.open-cluster-management.io/v1beta2.ManagedClusterSetBinding`
+
+### Package
+
+`internal/clusterset/global.go` — EnableGlobal, BindGlobal, UnbindGlobal, GlobalStatus
+
+---
+
+## UC-55: ManifestWork ordering (ordinal-based sequencing)
+
+**Feature**: Dependency-aware manifest deployment using ordinal sequencing
+
+As a platform operator
+I want to control the order in which manifests are applied on a spoke cluster
+So that namespaces are created before deployments, and CRDs before CRs
+
+### Scenario: Deploy an application stack with ordered manifests
+
+**Given** three manifests: Namespace (ordinal 0), ConfigMap (ordinal 1), Deployment (ordinal 2)
+**When** I create an ordered ManifestWork
+**Then** the manifests are applied in ordinal order
+**And** each resource uses ServerSideApply update strategy
+
+### ACM types
+
+`work.open-cluster-management.io/v1.ManifestWork` — spec.manifestConfigs[].resourceIdentifier.ordinal
+
+### Package
+
+`internal/rollout/ordering.go` + `ordering_builder.go` — CreateOrderedWork, GetOrderedWork, ListOrderedWork, RemoveOrderedWork
+
+---
+
+## UC-56: Cluster discovery via OpenShift Cluster Manager
+
+**Feature**: Discover unmanaged OpenShift clusters registered with Red Hat via OCM API
+
+As a platform operator
+I want to discover all OpenShift clusters not yet managed by ACM
+So that I can identify and import unmanaged clusters into the fleet
+
+### Scenario: Enable discovery and import a cluster
+
+**Given** an OCM API token from `ocm login --use-device-code` + `ocm token`
+**When** I enable discovery in a namespace
+**Then** DiscoveredCluster CRDs appear for OpenShift clusters registered with Red Hat
+**And** I can import them into ACM as ManagedClusters
+
+### What OCM discovers
+
+- OpenShift clusters: UPI, IPI, ROSA, ARO — any OpenShift registered with Red Hat
+- Does NOT discover: EKS, GKE, AKS, or vanilla Kubernetes (use UC-57 for those)
+
+### ACM types
+
+`discovery.open-cluster-management.io/v1.DiscoveryConfig` — spec.credential, spec.filters.lastActive
+`discovery.open-cluster-management.io/v1.DiscoveredCluster` — read-only, auto-populated by discovery operator
+
+### Package
+
+`internal/discovery/discovery.go` + `builder.go` — EnableDiscovery, DisableDiscovery, ListDiscovered, ImportDiscovered, DiscoveryStatus
+
+---
+
+## UC-57: Cloud-native cluster discovery (AWS, IBM Cloud, kubeconfig)
+
+**Feature**: Discover unmanaged Kubernetes clusters from cloud provider APIs and kubeconfig files
+
+As a platform operator
+I want to discover EKS, ROSA, IKS, ROKS clusters and kubeconfig-accessible clusters not managed by ACM
+So that I can identify and import them into the fleet regardless of their type
+
+### Scenario: Scan AWS and IBM Cloud for unmanaged clusters
+
+**Given** configured aws/rosa/ibmcloud CLI credentials
+**When** I scan cloud providers
+**Then** I see all clusters with a flag indicating whether each is already managed by ACM
+
+### Scenario: Scan kubeconfig directory
+
+**Given** a directory containing kubeconfig files for various clusters
+**When** I scan the directory
+**Then** I see all clusters from kubeconfig files cross-referenced against ACM ManagedClusters
+**And** unmanaged clusters can be auto-imported
+
+### Supported providers
+
+- AWS: EKS (via `aws eks`) and ROSA (via `rosa describe cluster`)
+- IBM Cloud: IKS and ROKS (via `ibmcloud ks cluster ls`)
+- Kubeconfig: any cluster type (OpenShift, EKS, GKE, AKS, vanilla Kubernetes)
+
+### Package
+
+`internal/discovery/cloud_discovery.go` — ScanClusters, AutoImport, ScanKubeconfigs, AutoImportKubeconfig
+
+---
+
 ## Summary
 
 | UC  |  What it validates  |  ACM Go module  |  ComputeRequest field |
@@ -2390,6 +2556,14 @@ New `internal/migration/` package: CreatePlan, Replicate, ValidateTarget, Cutove
 | UC-48  |  Placement scoring (resource-based scheduling)  |  `Placement` + `AddOnPlacementScore` prioritisers  |  spec.placement.scoring |
 | UC-49  |  PolicySet compliance profiles  |  `PolicySet` + `PlacementBinding` + grouped policies  |  spec.compliance.profile |
 | UC-50  |  ClusterCurator day-2 automation hooks  |  `ClusterCurator` pre/post hooks  |  spec.lifecycle.curator |
+| UC-51  |  Virtual Machine management via KubeVirt  |  `kubevirt.io/v1.VirtualMachine`  |  spec.vm |
+| UC-52  |  Multi-cluster observability and alerting  |  `MultiClusterObservability` + `ObservabilityAddon`  |  spec.observability |
+| UC-34  |  Placement tolerations and taints  |  `ManagedCluster` taints + `Placement` tolerations  |  spec.placement.tolerations |
+| UC-53  |  Cluster templating (ClusterDeploymentCustomization)  |  `hive/v1.ClusterDeploymentCustomization` installConfigPatches  |  spec.provisioning.template |
+| UC-54  |  Global ManagedClusterSet  |  `ManagedClusterSet` selectorType=LabelSelector  |  spec.clusterset.global |
+| UC-55  |  ManifestWork ordering (ordinal-based sequencing)  |  `ManifestWork` resourceIdentifier ordinals  |  spec.rollout.ordering |
+| UC-56  |  Cluster discovery via OCM  |  `discovery.open-cluster-management.io/v1.DiscoveryConfig`  |  spec.discovery.ocm |
+| UC-57  |  Cloud-native cluster discovery  |  AWS EKS/ROSA + IBM Cloud IKS/ROKS CLIs + kubeconfig scanning  |  spec.discovery.cloud |
 
 ## Go Dependencies (for the lab repo)
 
