@@ -24,6 +24,13 @@ Feature: Cluster provisioning via Hive ClusterDeployment
     Then the ClusterDeployment "spoke1" is accepted by Hive
     And the cluster "spoke1" eventually reaches Provisioned = True
 
+  @core
+  Scenario: Register IBM Cloud credentials via ACM Credentials API
+    Given the ACM hub is reachable
+    When I register IBM Cloud credentials as an ACM central credential "ibm-caas-creds"
+    Then the ACM credential "ibm-caas-creds" exists in open-cluster-management namespace
+    And the credential has provider type "ibm"
+
   Scenario: List provisioned clusters
     When I list all provisioned clusters
     Then I receive a list of ClusterDeployments with status

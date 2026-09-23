@@ -61,6 +61,7 @@ type suiteContext struct {
 	lastManifestWorkName   string
 	lastManifestWorkNS     string
 	importKubeconfig       []byte
+	lastCredential         *provisioning.CentralCredential
 }
 
 func TestFeatures(t *testing.T) {

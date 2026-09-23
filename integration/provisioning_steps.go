@@ -27,6 +27,9 @@ func registerProvisioningSteps(sc *godog.ScenarioContext, s *suiteContext) {
 	sc.Step(`^a ClusterDeployment "([^"]*)" exists with status Provisioned = True$`, s.clusterDeploymentProvisioned)
 	sc.Step(`^I destroy cluster "([^"]*)"$`, s.iDestroyCluster)
 	sc.Step(`^the ClusterDeployment "([^"]*)" is removed$`, s.clusterDeploymentRemoved)
+	sc.Step(`^I register IBM Cloud credentials as an ACM central credential "([^"]*)"$`, s.registerIBMCentralCredential)
+	sc.Step(`^the ACM credential "([^"]*)" exists in open-cluster-management namespace$`, s.acmCredentialExists)
+	sc.Step(`^the credential has provider type "([^"]*)"$`, s.credentialHasProviderType)
 }
 
 func (s *suiteContext) cloudCredentialsExist(ctx context.Context, ns string) error {
@@ -250,6 +253,46 @@ func (s *suiteContext) clusterDeploymentRemoved(ctx context.Context, name string
 		return fmt.Errorf("unexpected error checking ClusterDeployment %s: %w", name, err)
 	}
 	fmt.Printf("\n  ┌─ ClusterDeployment %q confirmed removed\n", name)
+	fmt.Printf("  └─\n")
+	return nil
+}
+
+func (s *suiteContext) registerIBMCentralCredential(ctx context.Context, name string) error {
+	cred := provisioning.CentralCredential{
+		Name:       name,
+		Provider:   "ibm",
+		BaseDomain: s.cfg.BaseDomain,
+		APIKey:     s.cfg.IBMCloudAPIKey,
+	}
+	if err := s.provisioner.EnsureCentralCredential(ctx, cred); err != nil {
+		return fmt.Errorf("registering ACM credential: %w", err)
+	}
+	fmt.Printf("\n  ┌─ Registered ACM central credential %q (provider=ibm)\n", name)
+	fmt.Printf("  │  Namespace: open-cluster-management\n")
+	fmt.Printf("  │  Labels: cluster.open-cluster-management.io/credentials, type=ibm\n")
+	fmt.Printf("  └─\n")
+	return nil
+}
+
+func (s *suiteContext) acmCredentialExists(ctx context.Context, name string) error {
+	cred, err := s.provisioner.GetCentralCredential(ctx, name)
+	if err != nil {
+		return fmt.Errorf("ACM credential %q not found: %w", name, err)
+	}
+	fmt.Printf("\n  ┌─ ACM credential %q exists (provider=%s)\n", cred.Name, cred.Provider)
+	fmt.Printf("  └─\n")
+	s.lastCredential = cred
+	return nil
+}
+
+func (s *suiteContext) credentialHasProviderType(ctx context.Context, providerType string) error {
+	if s.lastCredential == nil {
+		return fmt.Errorf("no credential loaded — run the existence check step first")
+	}
+	if s.lastCredential.Provider != providerType {
+		return fmt.Errorf("credential provider = %q, want %q", s.lastCredential.Provider, providerType)
+	}
+	fmt.Printf("\n  ┌─ Provider type confirmed: %s\n", providerType)
 	fmt.Printf("  └─\n")
 	return nil
 }
