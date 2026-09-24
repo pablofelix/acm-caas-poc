@@ -441,8 +441,24 @@ func TestCreateWithSSHKey(t *testing.T) {
 	}
 }
 
+func fakeClusterDeployment(name string, installed bool) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
+	})
+	obj.SetName(name)
+	obj.SetNamespace(name)
+	obj.SetResourceVersion("1")
+	if installed {
+		obj.Object["spec"] = map[string]interface{}{"installed": true}
+		obj.Object["status"] = map[string]interface{}{"installed": true}
+	}
+	return obj
+}
+
 func TestWaitForProvisionInstalled(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -453,15 +469,7 @@ func TestWaitForProvisionInstalled(t *testing.T) {
 	m := New(c, cfg, discardLogger)
 
 	go func() {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj.SetName("spoke1")
-		obj.SetNamespace("spoke1")
-		obj.Object["status"] = map[string]interface{}{
-			"installed": true,
-		}
+		obj := fakeClusterDeployment("spoke1", true)
 		watcher.Modify(obj)
 	}()
 
@@ -472,7 +480,8 @@ func TestWaitForProvisionInstalled(t *testing.T) {
 }
 
 func TestWaitForProvisionFailure(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -481,12 +490,7 @@ func TestWaitForProvisionFailure(t *testing.T) {
 	m := New(c, testConfig(), discardLogger)
 
 	go func() {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj.SetName("spoke1")
-		obj.SetNamespace("spoke1")
+		obj := fakeClusterDeployment("spoke1", false)
 		obj.Object["status"] = map[string]interface{}{
 			"conditions": []interface{}{
 				map[string]interface{}{
@@ -509,7 +513,8 @@ func TestWaitForProvisionFailure(t *testing.T) {
 }
 
 func TestWaitForProvisionTimeout(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -526,31 +531,44 @@ func TestWaitForProvisionTimeout(t *testing.T) {
 	}
 }
 
-func TestWaitForProvisionChannelClosed(t *testing.T) {
-	c := fakeClient()
+func TestWaitForProvisionChannelClosedReconnects(t *testing.T) {
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
-	watcher := watch.NewFake()
-	fakeD.PrependWatchReactor("clusterdeployments", k8stesting.DefaultWatchReactor(watcher, nil))
+	watcher1 := watch.NewFake()
+	watcher2 := watch.NewFake()
+	callCount := 0
+	fakeD.PrependWatchReactor("clusterdeployments", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		callCount++
+		if callCount == 1 {
+			return true, watcher1, nil
+		}
+		return true, watcher2, nil
+	})
 
 	m := New(c, testConfig(), discardLogger)
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		watcher.Stop()
+		watcher1.Stop()
+		time.Sleep(50 * time.Millisecond)
+		obj := fakeClusterDeployment("spoke1", true)
+		watcher2.Modify(obj)
 	}()
 
 	err := m.WaitForProvision(context.Background(), "spoke1", 5*time.Second)
-	if err == nil {
-		t.Fatal("expected error for closed channel")
+	if err != nil {
+		t.Fatalf("WaitForProvision should reconnect after channel close, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "watch channel closed") {
-		t.Errorf("expected channel closed error, got: %v", err)
+	if callCount < 2 {
+		t.Errorf("expected at least 2 watch calls (reconnect), got %d", callCount)
 	}
 }
 
 func TestWaitForProvisionDefaultTimeout(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -560,7 +578,6 @@ func TestWaitForProvisionDefaultTimeout(t *testing.T) {
 	cfg.ProvisionTimeout = 100 * time.Millisecond
 	m := New(c, cfg, discardLogger)
 
-	// timeout=0 should use cfg.ProvisionTimeout
 	err := m.WaitForProvision(context.Background(), "spoke1", 0)
 	if err == nil {
 		t.Fatal("expected timeout error")
@@ -571,7 +588,8 @@ func TestWaitForProvisionDefaultTimeout(t *testing.T) {
 }
 
 func TestWaitForProvisionNotYetInstalled(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -582,33 +600,30 @@ func TestWaitForProvisionNotYetInstalled(t *testing.T) {
 	m := New(c, cfg, discardLogger)
 
 	go func() {
-		// First event: not yet installed
-		obj1 := &unstructured.Unstructured{}
-		obj1.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj1.SetName("spoke1")
-		obj1.Object["status"] = map[string]interface{}{
-			"installed": false,
-		}
+		obj1 := fakeClusterDeployment("spoke1", false)
 		watcher.Modify(obj1)
 
-		// Second event: installed
 		time.Sleep(50 * time.Millisecond)
-		obj2 := &unstructured.Unstructured{}
-		obj2.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj2.SetName("spoke1")
-		obj2.Object["status"] = map[string]interface{}{
-			"installed": true,
-		}
+		obj2 := fakeClusterDeployment("spoke1", true)
 		watcher.Modify(obj2)
 	}()
 
 	err := m.WaitForProvision(context.Background(), "spoke1", 0)
 	if err != nil {
 		t.Fatalf("WaitForProvision failed: %v", err)
+	}
+}
+
+func TestWaitForProvisionAlreadyInstalled(t *testing.T) {
+	cd := fakeClusterDeployment("spoke1", true)
+	cd.Object["spec"] = map[string]interface{}{"installed": true}
+	c := fakeClient(cd)
+
+	m := New(c, testConfig(), discardLogger)
+
+	err := m.WaitForProvision(context.Background(), "spoke1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("WaitForProvision should return immediately for installed cluster: %v", err)
 	}
 }
 

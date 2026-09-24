@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/pablofelix/acm-caas-poc/internal/client"
 	"github.com/pablofelix/acm-caas-poc/internal/config"
@@ -264,21 +265,53 @@ func (m *Manager) WaitForProvision(ctx context.Context, name string, timeout tim
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	watcher, err := m.client.Watch(ctx, client.GVRClusterDeployment, name, metav1.ListOptions{
-		FieldSelector: "metadata.name=" + name,
-	})
-	if err != nil {
-		return fmt.Errorf("watching ClusterDeployment %s: %w", name, err)
-	}
-	defer watcher.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("timed out waiting for cluster %s to provision", name)
+		}
 
+		// Check current state before watching (handles already-installed case and gets resourceVersion)
+		current, err := m.client.Get(ctx, client.GVRClusterDeployment, name, name)
+		if err != nil {
+			return fmt.Errorf("getting ClusterDeployment %s: %w", name, err)
+		}
+		info := parseClusterInfo(current.Object)
+		if info.FailureReason != "" {
+			return fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
+		}
+		if info.Installed {
+			return nil
+		}
+
+		rv := current.GetResourceVersion()
+		watcher, err := m.client.Watch(ctx, client.GVRClusterDeployment, name, metav1.ListOptions{
+			FieldSelector:   "metadata.name=" + name,
+			ResourceVersion: rv,
+		})
+		if err != nil {
+			return fmt.Errorf("watching ClusterDeployment %s: %w", name, err)
+		}
+
+		done, watchErr := m.drainProvisionWatch(ctx, watcher, name)
+		watcher.Stop()
+		if done {
+			return watchErr
+		}
+		// Watch channel closed (server-side timeout) — reconnect
+		m.logger.Info("provisioning.WaitForProvision: watch reconnecting", "cluster", name)
+	}
+}
+
+// drainProvisionWatch reads events until installed, failed, context cancelled, or channel closed.
+// Returns (true, err) when a terminal state is reached, (false, nil) when the channel closed and reconnection is needed.
+func (m *Manager) drainProvisionWatch(ctx context.Context, watcher watch.Interface, name string) (bool, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for cluster %s to provision", name)
+			return true, fmt.Errorf("timed out waiting for cluster %s to provision", name)
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch channel closed for cluster %s", name)
+				return false, nil
 			}
 			obj, ok := event.Object.(*unstructured.Unstructured)
 			if !ok {
@@ -286,10 +319,10 @@ func (m *Manager) WaitForProvision(ctx context.Context, name string, timeout tim
 			}
 			info := parseClusterInfo(obj.Object)
 			if info.FailureReason != "" {
-				return fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
+				return true, fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
 			}
 			if info.Installed {
-				return nil
+				return true, nil
 			}
 		}
 	}
