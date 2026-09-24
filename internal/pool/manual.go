@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -18,14 +20,15 @@ const (
 	labelPool        = "acmlab.redhat.com/pool"
 	labelPoolClaimed = "acmlab.redhat.com/pool-claimed"
 	labelPoolIndex   = "acmlab.redhat.com/pool-index"
-)
 
-var poolConfigs = make(map[string]provisioning.ClusterOpts)
+	poolConfigNS = "open-cluster-management"
+)
 
 type ManualPoolOpts struct {
 	Name          string
 	Size          int
 	ProvisionOpts provisioning.ClusterOpts
+	CredentialRef string // name of the Secret holding cloud credentials
 }
 
 func (m *Manager) CreateManualPool(ctx context.Context, opts ManualPoolOpts) error {
@@ -35,6 +38,10 @@ func (m *Manager) CreateManualPool(ctx context.Context, opts ManualPoolOpts) err
 	}
 	if opts.Size <= 0 {
 		opts.Size = 2
+	}
+
+	if err := m.savePoolConfig(ctx, opts); err != nil {
+		return fmt.Errorf("persisting pool config: %w", err)
 	}
 
 	for i := 1; i <= opts.Size; i++ {
@@ -50,8 +57,6 @@ func (m *Manager) CreateManualPool(ctx context.Context, opts ManualPoolOpts) err
 			return fmt.Errorf("labeling pool cluster %s: %w", clusterName, err)
 		}
 	}
-
-	poolConfigs[opts.Name] = opts.ProvisionOpts
 
 	m.logger.Info("pool.CreateManualPool: all clusters created, waiting for install and hibernate separately",
 		"pool", opts.Name, "count", opts.Size)
@@ -102,40 +107,70 @@ func (m *Manager) ClaimManualPool(ctx context.Context, poolName, claimName strin
 	}
 
 	for _, name := range clusters {
-		claimed, err := m.isClusterClaimed(ctx, name)
-		if err != nil || claimed {
-			continue
-		}
-
-		state, err := m.lifecycle.GetPowerState(ctx, name, name)
+		cd, err := m.client.Get(ctx, client.GVRClusterDeployment, name, name)
 		if err != nil {
 			continue
 		}
-		if state != lifecycle.PowerStateHibernating {
+
+		labels, _, _ := unstructured.NestedStringMap(cd.Object, "metadata", "labels")
+		if labels[labelPoolClaimed] == "true" {
+			continue
+		}
+
+		powerState, _, _ := unstructured.NestedString(cd.Object, "spec", "powerState")
+		if powerState != string(lifecycle.PowerStateHibernating) {
+			continue
+		}
+
+		// Atomic claim: conditional patch using resourceVersion
+		rv := cd.GetResourceVersion()
+		if !m.tryAtomicClaim(ctx, name, rv) {
 			continue
 		}
 
 		if err := m.lifecycle.Resume(ctx, name, name); err != nil {
-			return nil, fmt.Errorf("resuming cluster %s: %w", name, err)
-		}
-
-		if err := m.setClaimLabel(ctx, name, "true"); err != nil {
-			return nil, fmt.Errorf("marking cluster %s as claimed: %w", name, err)
+			m.logger.Error("pool.ClaimManualPool: resume failed after claim, leaving claimed to avoid race", "cluster", name, "error", err)
 		}
 
 		if m.provisioning != nil {
-			go m.replenishPool(poolName, len(clusters))
+			go m.replenishPool(ctx, poolName)
 		}
 
 		return &ClaimInfo{
 			Name:    claimName,
 			Pool:    poolName,
 			Cluster: name,
-			Status:  "Running",
+			Status:  "Resuming",
 		}, nil
 	}
 
 	return nil, fmt.Errorf("no available (hibernated, unclaimed) cluster in pool %s", poolName)
+}
+
+// tryAtomicClaim attempts to set the claim label with a resourceVersion precondition.
+// Returns true if this caller won the claim, false if another caller got it first (conflict).
+func (m *Manager) tryAtomicClaim(ctx context.Context, clusterName, resourceVersion string) bool {
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"resourceVersion": resourceVersion,
+			"labels": map[string]interface{}{
+				labelPoolClaimed: "true",
+			},
+		},
+	}
+	data, _ := json.Marshal(patch)
+
+	_, err := m.client.Patch(ctx, client.GVRClusterDeployment, clusterName, clusterName,
+		types.MergePatchType, data)
+	if err != nil {
+		if apierrors.IsConflict(err) {
+			m.logger.Info("pool.tryAtomicClaim: conflict, another caller claimed first", "cluster", clusterName)
+		} else {
+			m.logger.Error("pool.tryAtomicClaim: patch failed", "cluster", clusterName, "error", err)
+		}
+		return false
+	}
+	return true
 }
 
 func (m *Manager) ReleaseManualClaim(ctx context.Context, clusterName string) error {
@@ -202,24 +237,35 @@ func (m *Manager) DeleteManualPool(ctx context.Context, poolName string) error {
 		}
 	}
 
+	if err := m.deletePoolConfig(ctx, poolName); err != nil {
+		m.logger.Error("pool.DeleteManualPool: failed to delete pool config", "pool", poolName, "error", err)
+		if lastErr == nil {
+			lastErr = err
+		}
+	}
+
 	return lastErr
 }
 
-func (m *Manager) replenishPool(poolName string, currentSize int) {
-	baseOpts, ok := poolConfigs[poolName]
-	if !ok {
-		m.logger.Error("pool.replenish: no config found for pool", "pool", poolName)
+func (m *Manager) replenishPool(parentCtx context.Context, poolName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Minute)
+	defer cancel()
+
+	_ = parentCtx // replenish runs independently of the claim context
+
+	opts, err := m.loadPoolConfig(ctx, poolName)
+	if err != nil {
+		m.logger.Error("pool.replenish: failed to load pool config", "pool", poolName, "error", err)
 		return
 	}
 
-	clusterName := fmt.Sprintf("%s-%d", poolName, currentSize+1)
+	clusterName := fmt.Sprintf("%s-%s", poolName, randomSuffix())
 	m.logger.Info("pool.replenish: provisioning replacement cluster", "pool", poolName, "cluster", clusterName)
 
-	ctx := context.Background()
-	opts := baseOpts
-	opts.Name = clusterName
+	clusterOpts := opts
+	clusterOpts.Name = clusterName
 
-	if err := m.provisioning.Create(ctx, opts); err != nil {
+	if err := m.provisioning.Create(ctx, clusterOpts); err != nil {
 		m.logger.Error("pool.replenish: failed to provision", "cluster", clusterName, "error", err)
 		return
 	}
@@ -229,8 +275,127 @@ func (m *Manager) replenishPool(poolName string, currentSize int) {
 		return
 	}
 
-	m.logger.Info("pool.replenish: replacement cluster created, will hibernate once installed", "cluster", clusterName)
+	m.logger.Info("pool.replenish: waiting for install", "cluster", clusterName)
+	if err := m.provisioning.WaitForProvision(ctx, clusterName, 60*time.Minute); err != nil {
+		m.logger.Error("pool.replenish: install failed or timed out", "cluster", clusterName, "error", err)
+		return
+	}
+
+	m.logger.Info("pool.replenish: hibernating replacement", "cluster", clusterName)
+	if err := m.lifecycle.Hibernate(ctx, clusterName, clusterName); err != nil {
+		m.logger.Error("pool.replenish: failed to hibernate", "cluster", clusterName, "error", err)
+		return
+	}
+
+	m.logger.Info("pool.replenish: replacement cluster ready", "cluster", clusterName, "pool", poolName)
 }
+
+func randomSuffix() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 4)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
+// --- Pool config persistence via ConfigMap ---
+
+func poolConfigName(poolName string) string {
+	return "pool-config-" + poolName
+}
+
+func (m *Manager) savePoolConfig(ctx context.Context, opts ManualPoolOpts) error {
+	credRef := opts.CredentialRef
+	if credRef == "" {
+		if opts.ProvisionOpts.Platform == "ibmcloud" {
+			credRef = "ibm-caas-creds"
+		} else if opts.ProvisionOpts.Platform == "aws" {
+			credRef = "aws-creds"
+		}
+	}
+
+	cm := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]interface{}{
+				"name":      poolConfigName(opts.Name),
+				"namespace": poolConfigNS,
+				"labels": map[string]interface{}{
+					labelPool: opts.Name,
+				},
+			},
+			"data": map[string]interface{}{
+				"platform":       opts.ProvisionOpts.Platform,
+				"region":         opts.ProvisionOpts.Region,
+				"imageSet":       opts.ProvisionOpts.ImageSet,
+				"baseDomain":     opts.ProvisionOpts.BaseDomain,
+				"workerType":     opts.ProvisionOpts.WorkerType,
+				"masterType":     opts.ProvisionOpts.MasterType,
+				"pullSecretRef":  "pull-secret",
+				"credentialRef":  credRef,
+			},
+		},
+	}
+
+	return m.client.CreateIfNotExists(ctx, client.GVRConfigMap, poolConfigNS, cm)
+}
+
+func (m *Manager) loadPoolConfig(ctx context.Context, poolName string) (provisioning.ClusterOpts, error) {
+	obj, err := m.client.Get(ctx, client.GVRConfigMap, poolConfigNS, poolConfigName(poolName))
+	if err != nil {
+		return provisioning.ClusterOpts{}, fmt.Errorf("loading pool config for %s: %w", poolName, err)
+	}
+
+	data, _, _ := unstructured.NestedStringMap(obj.Object, "data")
+
+	opts := provisioning.ClusterOpts{
+		Platform:   data["platform"],
+		Region:     data["region"],
+		ImageSet:   data["imageSet"],
+		BaseDomain: data["baseDomain"],
+		WorkerType: data["workerType"],
+		MasterType: data["masterType"],
+	}
+
+	credRef := data["credentialRef"]
+	if credRef != "" {
+		credSecret, err := m.client.Get(ctx, client.GVRSecret, poolConfigNS, credRef)
+		if err != nil {
+			return opts, fmt.Errorf("loading credential secret %s: %w", credRef, err)
+		}
+		secretData, _, _ := unstructured.NestedMap(credSecret.Object, "data")
+		if v, ok := secretData["ibmcloud_api_key"].(string); ok {
+			opts.IBMCloudAPIKey = v
+		}
+		if v, ok := secretData["aws_access_key_id"].(string); ok {
+			opts.AWSAccessKeyID = v
+		}
+		if v, ok := secretData["aws_secret_access_key"].(string); ok {
+			opts.AWSSecretAccessKey = v
+		}
+	}
+
+	pullRef := data["pullSecretRef"]
+	if pullRef != "" {
+		pullSecret, err := m.client.Get(ctx, client.GVRSecret, poolConfigNS, pullRef)
+		if err == nil {
+			pullData, _, _ := unstructured.NestedMap(pullSecret.Object, "data")
+			if v, ok := pullData[".dockerconfigjson"].(string); ok {
+				opts.PullSecret = v
+			}
+		}
+	}
+
+	return opts, nil
+}
+
+func (m *Manager) deletePoolConfig(ctx context.Context, poolName string) error {
+	return m.client.DeleteIfExists(ctx, client.GVRConfigMap, poolConfigNS, poolConfigName(poolName))
+}
+
+// --- Helper methods ---
 
 func (m *Manager) listPoolClusters(ctx context.Context, poolName string) ([]string, error) {
 	list, err := m.client.List(ctx, client.GVRClusterDeployment, "", labelPool+"="+poolName)

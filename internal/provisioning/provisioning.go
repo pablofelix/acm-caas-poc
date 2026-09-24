@@ -51,8 +51,9 @@ type Manager struct {
 	cfg    config.Config
 	logger *slog.Logger
 
-	iamURL string // override for testing; defaults to https://iam.cloud.ibm.com
-	vpcURL string // override for testing; defaults to https://{region}.iaas.cloud.ibm.com
+	iamURL  string // override for testing; defaults to https://iam.cloud.ibm.com
+	vpcURL  string // override for testing; defaults to https://{region}.iaas.cloud.ibm.com
+	awsExec func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("aws", ...)
 }
 
 func New(c *client.Client, cfg config.Config, logger *slog.Logger) *Manager {

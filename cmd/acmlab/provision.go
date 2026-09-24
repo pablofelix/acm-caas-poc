@@ -92,11 +92,18 @@ func provisionPreflightCmd() *cobra.Command {
 }
 
 func provisionOrphanCheckCmd() *cobra.Command {
+	var infraID, platform, region string
 	cmd := &cobra.Command{
-		Use:   "orphan-check <cluster-name>",
+		Use:   "orphan-check [cluster-name]",
 		Short: "Check for orphaned cloud resources from a cluster's infrastructure",
-		Long:  "Queries the cloud provider for resources matching the cluster's infraID. Use after destroy to verify all resources were cleaned up, or proactively to find leaked resources.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Queries the cloud provider for resources matching the cluster's infraID.
+Use after destroy to verify all resources were cleaned up, or proactively to find leaked resources.
+
+When the ClusterDeployment still exists, pass its name as the argument.
+After the cluster has been destroyed, use --infra-id, --platform, and --region instead:
+
+  acmlab provision orphan-check --infra-id <infra-id> --platform aws --region us-east-1`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := buildClient()
 			if err != nil {
@@ -105,9 +112,19 @@ func provisionOrphanCheckCmd() *cobra.Command {
 			mgr := provisioning.New(c, cfg, logger)
 			ctx := context.Background()
 
-			infraID, platform, region, err := mgr.CaptureInfraID(ctx, args[0])
-			if err != nil {
-				return fmt.Errorf("reading cluster metadata: %w", err)
+			if infraID != "" || platform != "" || region != "" {
+				if infraID == "" || platform == "" || region == "" {
+					return fmt.Errorf("--infra-id, --platform, and --region must all be provided together")
+				}
+			} else {
+				if len(args) == 0 {
+					return fmt.Errorf("provide a cluster name or use --infra-id, --platform, and --region")
+				}
+				var captureErr error
+				infraID, platform, region, captureErr = mgr.CaptureInfraID(ctx, args[0])
+				if captureErr != nil {
+					return fmt.Errorf("reading cluster metadata: %w", captureErr)
+				}
 			}
 
 			result, err := mgr.CheckOrphans(ctx, infraID, platform, region)
@@ -122,6 +139,9 @@ func provisionOrphanCheckCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&infraID, "infra-id", "", "Infrastructure ID (use after cluster is destroyed)")
+	cmd.Flags().StringVar(&platform, "platform", "", "Cloud platform: ibmcloud, aws (required with --infra-id)")
+	cmd.Flags().StringVar(&region, "region", "", "Cloud region (required with --infra-id)")
 	return cmd
 }
 
@@ -276,11 +296,15 @@ func provisionDestroyCmd() *cobra.Command {
 	var fromFile string
 	var concurrency int
 	var outputJSON bool
+	var checkOrphans bool
 
 	cmd := &cobra.Command{
 		Use:   "destroy [name...]",
 		Short: "Destroy one or more provisioned clusters",
-		Args:  cobra.MinimumNArgs(0),
+		Long: `Destroy one or more provisioned clusters.
+With --check-orphans (single cluster only), captures the infraID before destroying,
+waits for the ClusterDeployment to be fully removed, then checks for orphaned cloud resources.`,
+		Args: cobra.MinimumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var fileItems []batch.ClusterItem
 			if fromFile != "" {
@@ -301,6 +325,21 @@ func provisionDestroyCmd() *cobra.Command {
 			}
 			mgr := provisioning.New(c, cfg, logger)
 			ctx := context.Background()
+
+			if checkOrphans {
+				if len(items) != 1 {
+					return fmt.Errorf("--check-orphans requires exactly one cluster name")
+				}
+				result, err := mgr.DestroyWithOrphanCheck(ctx, items[0].Name)
+				if err != nil {
+					return err
+				}
+				fmt.Print(provisioning.FormatOrphanCheckResult(result))
+				if !result.Clean {
+					return fmt.Errorf("%d orphaned resources found", len(result.Orphans))
+				}
+				return nil
+			}
 
 			work := make([]batch.Work, len(items))
 			for i, item := range items {
@@ -334,6 +373,7 @@ func provisionDestroyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "YAML file with cluster list")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max parallel operations (max 20)")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output results as JSON array")
+	cmd.Flags().BoolVar(&checkOrphans, "check-orphans", false, "Capture infraID, destroy, wait, then check for orphaned resources (single cluster only)")
 	return cmd
 }
 

@@ -224,23 +224,25 @@ func (s *suiteContext) fetchPullSecret(ctx context.Context) (string, error) {
 }
 
 func (s *suiteContext) clusterDeploymentAccepted(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\n  ┌─ ClusterDeployment %q accepted by Hive\n", name)
+	fmt.Printf("\n  ┌─ ClusterDeployment %q accepted by Hive\n", resolved)
 	fmt.Printf("  └─\n")
 	return nil
 }
 
 func (s *suiteContext) clusterReachesProvisioned(ctx context.Context, name string) error {
+	resolved := s.resolveCluster(name)
 	timeout := 45 * time.Minute
 	interval := 30 * time.Second
 	deadline := time.After(timeout)
 	for {
-		obj, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+		obj, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 		if err != nil {
-			return fmt.Errorf("ClusterDeployment %s not found: %w", name, err)
+			return fmt.Errorf("ClusterDeployment %s not found: %w", resolved, err)
 		}
 		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 		for _, raw := range conditions {
@@ -256,7 +258,7 @@ func (s *suiteContext) clusterReachesProvisioned(ctx context.Context, name strin
 		}
 		select {
 		case <-deadline:
-			return fmt.Errorf("ClusterDeployment %s did not reach Provisioned within %v", name, timeout)
+			return fmt.Errorf("ClusterDeployment %s did not reach Provisioned within %v", resolved, timeout)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(interval):
@@ -293,23 +295,26 @@ func (s *suiteContext) receiveClusterDeploymentList() error {
 }
 
 func (s *suiteContext) clusterDeploymentProvisioned(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 	return err
 }
 
 func (s *suiteContext) iDestroyCluster(ctx context.Context, name string) error {
-	return s.provisioner.Destroy(ctx, name)
+	resolved := s.resolveCluster(name)
+	return s.provisioner.Destroy(ctx, resolved)
 }
 
 func (s *suiteContext) clusterDeploymentRemoved(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 	if err == nil {
-		return fmt.Errorf("ClusterDeployment %s still exists", name)
+		return fmt.Errorf("ClusterDeployment %s still exists", resolved)
 	}
 	if !errors.IsNotFound(err) {
-		return fmt.Errorf("unexpected error checking ClusterDeployment %s: %w", name, err)
+		return fmt.Errorf("unexpected error checking ClusterDeployment %s: %w", resolved, err)
 	}
-	fmt.Printf("\n  ┌─ ClusterDeployment %q confirmed removed\n", name)
+	fmt.Printf("\n  ┌─ ClusterDeployment %q confirmed removed\n", resolved)
 	fmt.Printf("  └─\n")
 	return nil
 }

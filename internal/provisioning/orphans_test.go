@@ -3,6 +3,7 @@ package provisioning
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -201,12 +202,12 @@ func TestCheckOrphansUnknownPlatform(t *testing.T) {
 	c := fakeClient()
 	m := New(c, testConfig(), discardLogger)
 
-	result, err := m.CheckOrphans(context.Background(), "test-infra", "gcp", "us-central1")
-	if err != nil {
-		t.Fatalf("CheckOrphans failed: %v", err)
+	_, err := m.CheckOrphans(context.Background(), "test-infra", "gcp", "us-central1")
+	if err == nil {
+		t.Fatal("expected error for unknown platform")
 	}
-	if !result.Clean {
-		t.Error("expected clean result for unknown platform (no checks run)")
+	if !strings.Contains(err.Error(), "unsupported platform") {
+		t.Errorf("expected unsupported platform error, got: %v", err)
 	}
 }
 
@@ -228,7 +229,10 @@ func TestQueryIBMCloudVPCWithOrphans(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 2 {
 		t.Fatalf("expected 2 orphans, got %d", len(orphans))
@@ -253,7 +257,10 @@ func TestQueryIBMCloudVPCNoOrphans(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 0 {
 		t.Fatalf("expected 0 orphans, got %d", len(orphans))
@@ -267,10 +274,28 @@ func TestQueryIBMCloudVPCServerError(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	_, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err == nil {
+		t.Fatal("expected error for HTTP 500")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("expected HTTP 500 in error, got: %v", err)
+	}
+}
 
-	if orphans != nil {
-		t.Fatalf("expected nil for server error, got %+v", orphans)
+func TestQueryIBMCloudVPCForbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(403)
+	}))
+	defer server.Close()
+
+	httpClient := server.Client()
+	_, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err == nil {
+		t.Fatal("expected error for HTTP 403")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("expected HTTP 403 in error, got: %v", err)
 	}
 }
 
@@ -281,10 +306,12 @@ func TestQueryIBMCloudVPCInvalidJSON(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
-
-	if orphans != nil {
-		t.Fatalf("expected nil for invalid JSON, got %+v", orphans)
+	_, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Errorf("expected invalid JSON in error, got: %v", err)
 	}
 }
 
@@ -301,7 +328,10 @@ func TestQueryIBMCloudVPCLoadBalancers(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "load-balancer")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "load-balancer")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 1 {
 		t.Fatalf("expected 1 orphan LB, got %d", len(orphans))
@@ -323,7 +353,10 @@ func TestQueryIBMCloudVPCSubnets(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "subnet")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "subnet")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 1 {
 		t.Fatalf("expected 1 orphan subnet, got %d", len(orphans))
@@ -342,7 +375,10 @@ func TestQueryIBMCloudVPCVPCs(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "vpc")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "vpc")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 1 {
 		t.Fatalf("expected 1 orphan VPC, got %d", len(orphans))
@@ -362,7 +398,10 @@ func TestQueryIBMCloudVPCFloatingIPs(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "floating-ip")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "floating-ip")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 
 	if len(orphans) != 2 {
 		t.Fatalf("expected 2 orphan floating IPs, got %d", len(orphans))
@@ -443,14 +482,104 @@ func TestCheckIBMCloudOrphansNoCredentials(t *testing.T) {
 	}
 }
 
-func TestCheckOrphansAWSNoRealCLI(t *testing.T) {
-	orphans, err := checkAWSOrphans("nonexistent-infra", "us-east-1")
-	if err != nil {
-		t.Fatalf("checkAWSOrphans failed: %v", err)
+func TestCheckOrphansAWSExecFailure(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+	m.awsExec = func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exec: aws not found")
 	}
-	// Without real AWS CLI, should return empty (commands fail silently)
-	if len(orphans) != 0 {
-		t.Errorf("expected 0 orphans without real AWS, got %d", len(orphans))
+
+	_, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
+	if err == nil {
+		t.Fatal("expected error when AWS CLI fails")
+	}
+	if !strings.Contains(err.Error(), "aws") {
+		t.Errorf("expected aws-related error, got: %v", err)
+	}
+}
+
+func TestCheckOrphansAWSClean(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+	m.awsExec = func(args ...string) ([]byte, error) {
+		if args[0] == "elbv2" {
+			return []byte(`{"LoadBalancers":[]}`), nil
+		}
+		return []byte(`[]`), nil
+	}
+
+	result, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Clean {
+		t.Error("expected clean result for empty AWS responses")
+	}
+}
+
+func TestCheckOrphansAWSWithOrphans(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+	m.awsExec = func(args ...string) ([]byte, error) {
+		if args[0] == "ec2" && args[1] == "describe-instances" {
+			return []byte(`[["i-1234","running","test-node"]]`), nil
+		}
+		if args[0] == "ec2" && args[1] == "describe-vpcs" {
+			return []byte(`[["vpc-5678","available"]]`), nil
+		}
+		if args[0] == "elbv2" {
+			return []byte(`{"LoadBalancers":[{"LoadBalancerArn":"arn:aws:test","LoadBalancerName":"test-infra-lb"}]}`), nil
+		}
+		return []byte(`[]`), nil
+	}
+
+	result, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Clean {
+		t.Error("expected orphans")
+	}
+	if len(result.Orphans) != 3 {
+		t.Errorf("expected 3 orphans (instance + vpc + lb), got %d", len(result.Orphans))
+	}
+}
+
+func TestCheckOrphansAWSInvalidJSON(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+	m.awsExec = func(args ...string) ([]byte, error) {
+		return []byte(`not-json`), nil
+	}
+
+	_, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Errorf("expected invalid JSON error, got: %v", err)
+	}
+}
+
+func TestCheckOrphansAWSTerminatedFiltered(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+	m.awsExec = func(args ...string) ([]byte, error) {
+		if args[0] == "ec2" && args[1] == "describe-instances" {
+			return []byte(`[["i-1234","terminated","old-node"]]`), nil
+		}
+		if args[0] == "elbv2" {
+			return []byte(`{"LoadBalancers":[]}`), nil
+		}
+		return []byte(`[]`), nil
+	}
+
+	result, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Clean {
+		t.Error("terminated instances should be filtered out")
 	}
 }
 
@@ -461,22 +590,6 @@ func TestDestroyWithOrphanCheckClusterNotFound(t *testing.T) {
 	_, err := m.DestroyWithOrphanCheck(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent cluster")
-	}
-}
-
-func TestCheckOrphansAWSPlatform(t *testing.T) {
-	c := fakeClient()
-	m := New(c, testConfig(), discardLogger)
-
-	result, err := m.CheckOrphans(context.Background(), "test-infra", "aws", "us-east-1")
-	if err != nil {
-		t.Fatalf("CheckOrphans failed: %v", err)
-	}
-	if result.InfraID != "test-infra" {
-		t.Errorf("infraID = %s, want test-infra", result.InfraID)
-	}
-	if result.Platform != "aws" {
-		t.Errorf("platform = %s, want aws", result.Platform)
 	}
 }
 
@@ -492,6 +605,29 @@ func TestCheckOrphansIBMPlatformNoCredentials(t *testing.T) {
 }
 
 func TestDestroyWithOrphanCheckHappyPath(t *testing.T) {
+	iamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"access_token": "mock-token"})
+	}))
+	defer iamServer.Close()
+
+	vpcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{}
+		switch {
+		case strings.Contains(r.URL.Path, "/instances"):
+			resp["instances"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/load_balancers"):
+			resp["load_balancers"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/subnets"):
+			resp["subnets"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/vpcs"):
+			resp["vpcs"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/floating_ips"):
+			resp["floating_ips"] = []interface{}{}
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer vpcServer.Close()
+
 	cd := &unstructured.Unstructured{}
 	cd.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
@@ -503,14 +639,17 @@ func TestDestroyWithOrphanCheckHappyPath(t *testing.T) {
 			"infraID": "spoke1-xyz99",
 		},
 		"platform": map[string]interface{}{
-			"aws": map[string]interface{}{
-				"region": "us-east-1",
+			"ibmcloud": map[string]interface{}{
+				"region": "us-south",
 			},
 		},
 	}
 
 	c := fakeClient(cd)
-	m := New(c, testConfig(), discardLogger)
+	cfg := testConfig()
+	m := New(c, cfg, discardLogger)
+	m.iamURL = iamServer.URL
+	m.vpcURL = vpcServer.URL
 
 	result, err := m.DestroyWithOrphanCheck(context.Background(), "spoke1")
 	if err != nil {
@@ -519,12 +658,38 @@ func TestDestroyWithOrphanCheckHappyPath(t *testing.T) {
 	if result.InfraID != "spoke1-xyz99" {
 		t.Errorf("infraID = %s, want spoke1-xyz99", result.InfraID)
 	}
-	if result.Platform != "aws" {
-		t.Errorf("platform = %s, want aws", result.Platform)
+	if result.Platform != "ibmcloud" {
+		t.Errorf("platform = %s, want ibmcloud", result.Platform)
+	}
+	if !result.Clean {
+		t.Error("expected clean result with no orphans")
 	}
 }
 
 func TestDestroyWithOrphanCheckContextCancelled(t *testing.T) {
+	iamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"access_token": "mock-token"})
+	}))
+	defer iamServer.Close()
+
+	vpcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{}
+		switch {
+		case strings.Contains(r.URL.Path, "/instances"):
+			resp["instances"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/load_balancers"):
+			resp["load_balancers"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/subnets"):
+			resp["subnets"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/vpcs"):
+			resp["vpcs"] = []interface{}{}
+		case strings.Contains(r.URL.Path, "/floating_ips"):
+			resp["floating_ips"] = []interface{}{}
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer vpcServer.Close()
+
 	cd := &unstructured.Unstructured{}
 	cd.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
@@ -533,19 +698,15 @@ func TestDestroyWithOrphanCheckContextCancelled(t *testing.T) {
 	cd.SetNamespace("stuck")
 	cd.Object["spec"] = map[string]interface{}{
 		"platform": map[string]interface{}{
-			"aws": map[string]interface{}{"region": "us-east-1"},
+			"ibmcloud": map[string]interface{}{"region": "us-south"},
 		},
 	}
 
 	c := fakeClient(cd)
-
-	// Make Destroy fail by using a cluster that can't be found at destroy time
-	// Actually, we want to test context cancellation in the wait loop.
-	// With fakeClient, Destroy deletes the CD, but the wait loop's Get will return not-found,
-	// so it will exit immediately. This tests the full path through successfully.
 	cfg := testConfig()
-	cfg.IBMCloudAPIKey = ""
 	m := New(c, cfg, discardLogger)
+	m.iamURL = iamServer.URL
+	m.vpcURL = vpcServer.URL
 
 	result, err := m.DestroyWithOrphanCheck(context.Background(), "stuck")
 	if err != nil {
@@ -631,7 +792,6 @@ func TestQueryIBMCloudOrphansWithHTTPTest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queryIBMCloudOrphans failed: %v", err)
 	}
-	// Should find: 1 instance, 1 LB, 0 subnets, 1 VPC, 0 floating IPs = 3 orphans
 	if len(orphans) != 3 {
 		t.Errorf("expected 3 orphans, got %d: %+v", len(orphans), orphans)
 	}
@@ -679,6 +839,28 @@ func TestQueryIBMCloudOrphansClean(t *testing.T) {
 	}
 }
 
+func TestQueryIBMCloudOrphansPartialFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/instances"):
+			json.NewEncoder(w).Encode(map[string]interface{}{"instances": []interface{}{}})
+		case strings.Contains(r.URL.Path, "/load_balancers"):
+			w.WriteHeader(500)
+		default:
+			json.NewEncoder(w).Encode(map[string]interface{}{})
+		}
+	}))
+	defer server.Close()
+
+	_, err := queryIBMCloudOrphans(server.Client(), "test-token", server.URL+"/v1", "myinfra")
+	if err == nil {
+		t.Fatal("expected error when one query fails")
+	}
+	if !strings.Contains(err.Error(), "load-balancer") {
+		t.Errorf("expected load-balancer in error, got: %v", err)
+	}
+}
+
 func TestQueryIBMCloudVPCEmptyList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
@@ -689,7 +871,10 @@ func TestQueryIBMCloudVPCEmptyList(t *testing.T) {
 	defer server.Close()
 
 	httpClient := server.Client()
-	orphans := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	orphans, err := queryIBMCloudVPC(httpClient, "test-token", server.URL, "test-infra", "instance")
+	if err != nil {
+		t.Fatalf("queryIBMCloudVPC failed: %v", err)
+	}
 	if len(orphans) != 0 {
 		t.Fatalf("expected 0 orphans for empty list, got %d", len(orphans))
 	}

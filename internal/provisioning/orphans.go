@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/pablofelix/acm-caas-poc/internal/client"
@@ -67,7 +68,7 @@ func (m *Manager) CheckOrphans(ctx context.Context, infraID, platform, region st
 
 	switch platform {
 	case "aws":
-		orphans, err := checkAWSOrphans(infraID, region)
+		orphans, err := m.checkAWSOrphans(infraID, region)
 		if err != nil {
 			return nil, err
 		}
@@ -78,6 +79,8 @@ func (m *Manager) CheckOrphans(ctx context.Context, infraID, platform, region st
 			return nil, err
 		}
 		result.Orphans = orphans
+	default:
+		return nil, fmt.Errorf("orphan check: unsupported platform %q", platform)
 	}
 
 	result.Clean = len(result.Orphans) == 0
@@ -105,7 +108,10 @@ func (m *Manager) DestroyWithOrphanCheck(ctx context.Context, name string) (*Orp
 	for {
 		_, err := m.client.Get(ctx, client.GVRClusterDeployment, name, name)
 		if err != nil {
-			break
+			if apierrors.IsNotFound(err) {
+				break
+			}
+			return nil, fmt.Errorf("checking ClusterDeployment %s removal: %w", name, err)
 		}
 		select {
 		case <-deadline:
@@ -119,73 +125,83 @@ func (m *Manager) DestroyWithOrphanCheck(ctx context.Context, name string) (*Orp
 	return m.CheckOrphans(ctx, infraID, platform, region)
 }
 
-func checkAWSOrphans(infraID, region string) ([]OrphanedResource, error) {
+func (m *Manager) runAWS(args ...string) ([]byte, error) {
+	if m.awsExec != nil {
+		return m.awsExec(args...)
+	}
+	return exec.Command("aws", args...).CombinedOutput()
+}
+
+func (m *Manager) checkAWSOrphans(infraID, region string) ([]OrphanedResource, error) {
 	tag := fmt.Sprintf("kubernetes.io/cluster/%s", infraID)
 	var orphans []OrphanedResource
 
-	// EC2 instances
-	out, err := exec.Command("aws", "ec2", "describe-instances",
+	out, err := m.runAWS("ec2", "describe-instances",
 		"--filters", fmt.Sprintf("Name=tag:%s,Values=owned", tag),
 		"--query", "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key==`Name`].Value|[0]]",
-		"--region", region, "--output", "json").CombinedOutput()
-	if err == nil {
-		var instances [][]interface{}
-		if json.Unmarshal(out, &instances) == nil {
-			for _, inst := range instances {
-				if len(inst) >= 2 {
-					state, _ := inst[1].(string)
-					if state != "terminated" {
-						id, _ := inst[0].(string)
-						name := ""
-						if len(inst) >= 3 {
-							name, _ = inst[2].(string)
-						}
-						orphans = append(orphans, OrphanedResource{
-							Type: "ec2-instance", Name: name, ID: id, Status: state,
-						})
-					}
+		"--region", region, "--output", "json")
+	if err != nil {
+		return nil, fmt.Errorf("aws ec2 describe-instances: %w", err)
+	}
+	var instances [][]interface{}
+	if err := json.Unmarshal(out, &instances); err != nil {
+		return nil, fmt.Errorf("aws ec2 describe-instances: invalid JSON: %w", err)
+	}
+	for _, inst := range instances {
+		if len(inst) >= 2 {
+			state, _ := inst[1].(string)
+			if state != "terminated" {
+				id, _ := inst[0].(string)
+				name := ""
+				if len(inst) >= 3 {
+					name, _ = inst[2].(string)
 				}
+				orphans = append(orphans, OrphanedResource{
+					Type: "ec2-instance", Name: name, ID: id, Status: state,
+				})
 			}
 		}
 	}
 
-	// VPCs
-	out, err = exec.Command("aws", "ec2", "describe-vpcs",
+	out, err = m.runAWS("ec2", "describe-vpcs",
 		"--filters", fmt.Sprintf("Name=tag:%s,Values=owned", tag),
 		"--query", "Vpcs[].[VpcId,State]",
-		"--region", region, "--output", "json").CombinedOutput()
-	if err == nil {
-		var vpcs [][]interface{}
-		if json.Unmarshal(out, &vpcs) == nil {
-			for _, vpc := range vpcs {
-				if len(vpc) >= 1 {
-					id, _ := vpc[0].(string)
-					orphans = append(orphans, OrphanedResource{
-						Type: "vpc", ID: id,
-					})
-				}
-			}
+		"--region", region, "--output", "json")
+	if err != nil {
+		return nil, fmt.Errorf("aws ec2 describe-vpcs: %w", err)
+	}
+	var vpcs [][]interface{}
+	if err := json.Unmarshal(out, &vpcs); err != nil {
+		return nil, fmt.Errorf("aws ec2 describe-vpcs: invalid JSON: %w", err)
+	}
+	for _, vpc := range vpcs {
+		if len(vpc) >= 1 {
+			id, _ := vpc[0].(string)
+			orphans = append(orphans, OrphanedResource{
+				Type: "vpc", ID: id,
+			})
 		}
 	}
 
-	// ELBs (classic + NLB/ALB)
-	out, err = exec.Command("aws", "elbv2", "describe-load-balancers",
-		"--region", region, "--output", "json").CombinedOutput()
-	if err == nil {
-		var resp struct {
-			LoadBalancers []struct {
-				ARN  string `json:"LoadBalancerArn"`
-				Name string `json:"LoadBalancerName"`
-			} `json:"LoadBalancers"`
-		}
-		if json.Unmarshal(out, &resp) == nil {
-			for _, lb := range resp.LoadBalancers {
-				if strings.Contains(lb.Name, infraID) {
-					orphans = append(orphans, OrphanedResource{
-						Type: "load-balancer", Name: lb.Name, ID: lb.ARN,
-					})
-				}
-			}
+	out, err = m.runAWS("elbv2", "describe-load-balancers",
+		"--region", region, "--output", "json")
+	if err != nil {
+		return nil, fmt.Errorf("aws elbv2 describe-load-balancers: %w", err)
+	}
+	var resp struct {
+		LoadBalancers []struct {
+			ARN  string `json:"LoadBalancerArn"`
+			Name string `json:"LoadBalancerName"`
+		} `json:"LoadBalancers"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, fmt.Errorf("aws elbv2 describe-load-balancers: invalid JSON: %w", err)
+	}
+	for _, lb := range resp.LoadBalancers {
+		if strings.Contains(lb.Name, infraID) {
+			orphans = append(orphans, OrphanedResource{
+				Type: "load-balancer", Name: lb.Name, ID: lb.ARN,
+			})
 		}
 	}
 
@@ -223,46 +239,52 @@ func queryIBMCloudOrphans(httpClient *http.Client, iamToken, baseURL, infraID st
 	version := "2024-06-04"
 	var orphans []OrphanedResource
 
-	orphans = append(orphans, queryIBMCloudVPC(httpClient, iamToken,
-		fmt.Sprintf("%s/instances?version=%s&generation=2&limit=100", baseURL, version),
-		infraID, "instance")...)
+	type query struct {
+		url          string
+		resourceType string
+	}
+	queries := []query{
+		{fmt.Sprintf("%s/instances?version=%s&generation=2&limit=100", baseURL, version), "instance"},
+		{fmt.Sprintf("%s/load_balancers?version=%s&generation=2", baseURL, version), "load-balancer"},
+		{fmt.Sprintf("%s/subnets?version=%s&generation=2", baseURL, version), "subnet"},
+		{fmt.Sprintf("%s/vpcs?version=%s&generation=2", baseURL, version), "vpc"},
+		{fmt.Sprintf("%s/floating_ips?version=%s&generation=2", baseURL, version), "floating-ip"},
+	}
 
-	orphans = append(orphans, queryIBMCloudVPC(httpClient, iamToken,
-		fmt.Sprintf("%s/load_balancers?version=%s&generation=2", baseURL, version),
-		infraID, "load-balancer")...)
-
-	orphans = append(orphans, queryIBMCloudVPC(httpClient, iamToken,
-		fmt.Sprintf("%s/subnets?version=%s&generation=2", baseURL, version),
-		infraID, "subnet")...)
-
-	orphans = append(orphans, queryIBMCloudVPC(httpClient, iamToken,
-		fmt.Sprintf("%s/vpcs?version=%s&generation=2", baseURL, version),
-		infraID, "vpc")...)
-
-	orphans = append(orphans, queryIBMCloudVPC(httpClient, iamToken,
-		fmt.Sprintf("%s/floating_ips?version=%s&generation=2", baseURL, version),
-		infraID, "floating-ip")...)
+	for _, q := range queries {
+		results, err := queryIBMCloudVPC(httpClient, iamToken, q.url, infraID, q.resourceType)
+		if err != nil {
+			return nil, fmt.Errorf("ibmcloud %s query: %w", q.resourceType, err)
+		}
+		orphans = append(orphans, results...)
+	}
 
 	return orphans, nil
 }
 
-func queryIBMCloudVPC(httpClient *http.Client, token, url, infraID, resourceType string) []OrphanedResource {
+func queryIBMCloudVPC(httpClient *http.Client, token, url, infraID, resourceType string) ([]OrphanedResource, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := httpClient.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request for %s: %w", resourceType, err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("HTTP %d querying %s", resp.StatusCode, resourceType)
+	}
 
-	// IBM Cloud VPC list responses use the resource type as the key
-	// (e.g., "instances", "load_balancers", "subnets", "vpcs", "floating_ips")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response for %s: %w", resourceType, err)
+	}
+
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(body, &raw) != nil {
-		return nil
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON for %s: %w", resourceType, err)
 	}
 
 	var items []struct {
@@ -271,10 +293,11 @@ func queryIBMCloudVPC(httpClient *http.Client, token, url, infraID, resourceType
 		Status string `json:"status"`
 	}
 
-	// Try each possible key
 	for _, key := range []string{"instances", "load_balancers", "subnets", "vpcs", "floating_ips"} {
 		if data, ok := raw[key]; ok {
-			json.Unmarshal(data, &items)
+			if err := json.Unmarshal(data, &items); err != nil {
+				return nil, fmt.Errorf("invalid JSON items for %s: %w", resourceType, err)
+			}
 			break
 		}
 	}
@@ -290,7 +313,7 @@ func queryIBMCloudVPC(httpClient *http.Client, token, url, infraID, resourceType
 			})
 		}
 	}
-	return orphans
+	return orphans, nil
 }
 
 func FormatOrphanCheckResult(r *OrphanCheckResult) string {
