@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +29,8 @@ func provisionCmd() *cobra.Command {
 		provisionImageSetsCmd(),
 		provisionListCAPICmd(),
 		provisionListHostedCmd(),
+		provisionSetupCAPICmd(),
+		provisionCAPIStatusCmd(),
 		provisionTemplateCreateCmd(),
 		provisionTemplateGetCmd(),
 		provisionTemplateListCmd(),
@@ -147,7 +150,7 @@ After the cluster has been destroyed, use --infra-id, --platform, and --region i
 
 func provisionCreateCmd() *cobra.Command {
 	var platform, region, baseDomain, imageSet, workerType, masterType, sshKeyFile, sshPrivateKeyFile, pullSecretFile, manifestsDir string
-	var clusterType, kubernetesVersion, infraProvider, releaseImage string
+	var clusterType, kubernetesVersion, infraProvider, releaseImage, sshKeyName string
 	var workers, masters int64
 	cmd := &cobra.Command{
 		Use:   "create <cluster-name>",
@@ -191,6 +194,8 @@ func provisionCreateCmd() *cobra.Command {
 					InfraProvider:     infraProvider,
 					KubernetesVersion: kubernetesVersion,
 					WorkerReplicas:    workers,
+					Region:            region,
+					SSHKeyName:        sshKeyName,
 				}
 				if pullSecretFile != "" {
 					data, err := os.ReadFile(pullSecretFile)
@@ -199,12 +204,15 @@ func provisionCreateCmd() *cobra.Command {
 					}
 					opts.PullSecret = string(data)
 				}
-				fmt.Printf("Creating CAPI cluster %s (provider: %s)...\n", args[0], opts.InfraProvider)
+				if opts.InfraProvider == "" && cfg.Platform == "aws" {
+					opts.InfraProvider = "aws"
+				}
+				fmt.Printf("Creating CAPI cluster %s (provider: %s, region: %s)...\n", args[0], opts.InfraProvider, opts.Region)
 				if err := mgr.CreateCAPI(context.Background(), opts); err != nil {
 					return err
 				}
-				fmt.Println("CAPI Cluster and MachineDeployment created.")
-				fmt.Println("Use 'acmlab provision status' to monitor progress.")
+				fmt.Println("CAPI Cluster created with all infrastructure resources.")
+				fmt.Println("Use 'acmlab provision status-capi' to monitor progress.")
 				return nil
 			}
 
@@ -275,8 +283,9 @@ func provisionCreateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&clusterType, "type", "", "provisioning type: hive (default), hypershift, capi")
 	cmd.Flags().StringVar(&releaseImage, "release-image", "", "OCP release image for HyperShift clusters")
-	cmd.Flags().StringVar(&kubernetesVersion, "kubernetes-version", "", "Kubernetes version for CAPI clusters (default: v1.30.0)")
-	cmd.Flags().StringVar(&infraProvider, "infra-provider", "", "CAPI infrastructure provider: docker, aws, azure, gcp (default: docker)")
+	cmd.Flags().StringVar(&kubernetesVersion, "kubernetes-version", "", "Kubernetes version for CAPI clusters (default: v1.34.8)")
+	cmd.Flags().StringVar(&infraProvider, "infra-provider", "", "CAPI infrastructure provider: aws, docker, azure, gcp (default: aws on AWS platform)")
+	cmd.Flags().StringVar(&sshKeyName, "ssh-key-name", "", "AWS SSH key pair name for CAPI clusters")
 	cmd.Flags().StringVar(&platform, "platform", "", "cloud platform: ibmcloud, aws, gcp, azure (default: from env)")
 	cmd.Flags().StringVar(&baseDomain, "base-domain", "", "base DNS domain for the cluster (default: from ACM_BASE_DOMAIN env)")
 	cmd.Flags().StringVar(&region, "region", "", "cloud region (default: from env)")
@@ -561,6 +570,86 @@ func provisionListHostedCmd() *cobra.Command {
 			for _, c := range clusters {
 				fmt.Printf("%-20s %-15s %-10v %s\n", c.Name, c.Namespace, c.Available, c.Version)
 			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func provisionSetupCAPICmd() *cobra.Command {
+	var infraProviders, region, sshKeyName string
+	var waitTimeout int
+	cmd := &cobra.Command{
+		Use:   "setup-capi",
+		Short: "Install CAPI controllers, grant SCCs, upgrade CRDs, and create SSH keys on the hub",
+		Long: `Sets up the hub cluster for CAPI provisioning:
+- Installs CAPI core, kubeadm bootstrap, kubeadm control plane, and infrastructure controllers via clusterctl
+- Upgrades CRDs to support v1beta2 API (required for newer infrastructure providers)
+- Grants privileged SCC to CAPI service accounts (required on OpenShift)
+- Optionally creates an AWS SSH key pair for CAPI clusters`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+
+			providers := strings.Split(infraProviders, ",")
+
+			opts := provisioning.CAPISetupOpts{
+				InfraProviders: providers,
+				Region:         region,
+				SSHKeyName:     sshKeyName,
+			}
+			if waitTimeout > 0 {
+				opts.WaitTimeout = time.Duration(waitTimeout) * time.Second
+			}
+
+			fmt.Println("Setting up CAPI controllers on hub...")
+			result, err := mgr.SetupCAPIControllers(context.Background(), opts)
+			if err != nil {
+				fmt.Println(result.Summary())
+				return err
+			}
+
+			fmt.Println(result.Summary())
+			if len(result.Errors) > 0 {
+				return fmt.Errorf("setup completed with %d errors", len(result.Errors))
+			}
+			fmt.Println("\nCAPI setup complete. You can now provision clusters with:")
+			fmt.Println("  acmlab provision create <name> --type capi --infra-provider aws --region us-east-1")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&infraProviders, "infra-providers", "aws", "Comma-separated infrastructure providers to install (aws, ibmcloud, azure, gcp)")
+	cmd.Flags().StringVar(&region, "region", "", "AWS region for SSH key creation (default: from config)")
+	cmd.Flags().StringVar(&sshKeyName, "ssh-key-name", "", "AWS SSH key pair name to create (optional)")
+	cmd.Flags().IntVar(&waitTimeout, "wait-timeout", 300, "Timeout in seconds for pods to become ready")
+	return cmd
+}
+
+func provisionCAPIStatusCmd() *cobra.Command {
+	var outputJSON bool
+	cmd := &cobra.Command{
+		Use:   "capi-status",
+		Short: "Show status of CAPI controllers on the hub",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+			statuses, err := mgr.CAPIControllerStatus(context.Background())
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				data, _ := json.MarshalIndent(statuses, "", "  ")
+				fmt.Println(string(data))
+				return nil
+			}
+			fmt.Println(provisioning.FormatCAPIControllerStatus(statuses))
 			return nil
 		},
 	}

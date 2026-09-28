@@ -53,7 +53,10 @@ type Manager struct {
 
 	iamURL  string // override for testing; defaults to https://iam.cloud.ibm.com
 	vpcURL  string // override for testing; defaults to https://{region}.iaas.cloud.ibm.com
-	awsExec func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("aws", ...)
+	awsExec        func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("aws", ...)
+	clusterctlExec func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("clusterctl", ...)
+	ocExec         func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("oc", ...)
+	kubectlExec    func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("kubectl", ...)
 }
 
 func New(c *client.Client, cfg config.Config, logger *slog.Logger) *Manager {

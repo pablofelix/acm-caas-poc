@@ -121,10 +121,22 @@ var (
 		Group: "hypershift.openshift.io", Version: "v1beta1", Resource: "nodepools",
 	}
 	GVRCAPICluster = schema.GroupVersionResource{
-		Group: "cluster.x-k8s.io", Version: "v1beta1", Resource: "clusters",
+		Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "clusters",
 	}
 	GVRCAPIMachineDeployment = schema.GroupVersionResource{
-		Group: "cluster.x-k8s.io", Version: "v1beta1", Resource: "machinedeployments",
+		Group: "cluster.x-k8s.io", Version: "v1beta2", Resource: "machinedeployments",
+	}
+	GVRAWSCluster = schema.GroupVersionResource{
+		Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta2", Resource: "awsclusters",
+	}
+	GVRAWSMachineTemplate = schema.GroupVersionResource{
+		Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta2", Resource: "awsmachinetemplates",
+	}
+	GVRKubeadmControlPlane = schema.GroupVersionResource{
+		Group: "controlplane.cluster.x-k8s.io", Version: "v1beta2", Resource: "kubeadmcontrolplanes",
+	}
+	GVRKubeadmConfigTemplate = schema.GroupVersionResource{
+		Group: "bootstrap.cluster.x-k8s.io", Version: "v1beta2", Resource: "kubeadmconfigtemplates",
 	}
 	GVRAddOnPlacementScore = schema.GroupVersionResource{
 		Group: "addon.open-cluster-management.io", Version: "v1alpha1", Resource: "addonplacementscores",
@@ -158,5 +170,14 @@ var (
 	}
 	GVRImageConfig = schema.GroupVersionResource{
 		Group: "config.openshift.io", Version: "v1", Resource: "images",
+	}
+	GVRRoute = schema.GroupVersionResource{
+		Group: "route.openshift.io", Version: "v1", Resource: "routes",
+	}
+	GVRCustomResourceDefinition = schema.GroupVersionResource{
+		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
+	}
+	GVRStatefulSet = schema.GroupVersionResource{
+		Group: "apps", Version: "v1", Resource: "statefulsets",
 	}
 )

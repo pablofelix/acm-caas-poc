@@ -19,11 +19,15 @@ func fakeCAPIClient(objs ...runtime.Object) *client.Client {
 	scheme := runtime.NewScheme()
 	fake := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{
-			client.GVRCAPICluster:           "ClusterList",
-			client.GVRCAPIMachineDeployment: "MachineDeploymentList",
-			client.GVRManagedCluster:        "ManagedClusterList",
-			client.GVRNamespace:             "NamespaceList",
-			client.GVRSecret:                "SecretList",
+			client.GVRCAPICluster:            "ClusterList",
+			client.GVRCAPIMachineDeployment:  "MachineDeploymentList",
+			client.GVRManagedCluster:         "ManagedClusterList",
+			client.GVRNamespace:              "NamespaceList",
+			client.GVRSecret:                 "SecretList",
+			client.GVRAWSCluster:             "AWSClusterList",
+			client.GVRAWSMachineTemplate:     "AWSMachineTemplateList",
+			client.GVRKubeadmControlPlane:    "KubeadmControlPlaneList",
+			client.GVRKubeadmConfigTemplate:  "KubeadmConfigTemplateList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -102,8 +106,8 @@ func TestCreateCAPIDefaults(t *testing.T) {
 	if opts.InfraProvider != "docker" {
 		t.Errorf("InfraProvider = %s, want docker", opts.InfraProvider)
 	}
-	if opts.KubernetesVersion != "v1.30.0" {
-		t.Errorf("KubernetesVersion = %s, want v1.30.0", opts.KubernetesVersion)
+	if opts.KubernetesVersion != "v1.34.8" {
+		t.Errorf("KubernetesVersion = %s, want v1.34.8", opts.KubernetesVersion)
 	}
 	if opts.WorkerReplicas != 2 {
 		t.Errorf("WorkerReplicas = %d, want 2", opts.WorkerReplicas)
@@ -120,6 +124,7 @@ func TestCreateCAPIWithCustomOpts(t *testing.T) {
 	err := m.CreateCAPI(context.Background(), CAPIClusterOpts{
 		Name:              "k8s-prod-1",
 		InfraProvider:     "aws",
+		Region:            "us-east-1",
 		KubernetesVersion: "v1.29.0",
 		WorkerReplicas:    5,
 	})
@@ -166,7 +171,7 @@ func TestCreateCAPIIsIdempotent(t *testing.T) {
 func TestDestroyCAPI(t *testing.T) {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "Cluster",
+		Group: "cluster.x-k8s.io", Version: "v1beta2", Kind: "Cluster",
 	})
 	cluster.SetName("k8s-dev-1")
 	cluster.SetNamespace("k8s-dev-1")
@@ -217,7 +222,7 @@ func TestDestroyCAPIIdempotent(t *testing.T) {
 func TestStatusCAPI(t *testing.T) {
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "Cluster",
+		Group: "cluster.x-k8s.io", Version: "v1beta2", Kind: "Cluster",
 	})
 	cluster.SetName("k8s-dev-1")
 	cluster.SetNamespace("k8s-dev-1")
@@ -262,7 +267,7 @@ func TestListCAPI(t *testing.T) {
 	for _, name := range []string{"k8s-dev-1", "k8s-dev-2"} {
 		cluster := &unstructured.Unstructured{}
 		cluster.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "Cluster",
+			Group: "cluster.x-k8s.io", Version: "v1beta2", Kind: "Cluster",
 		})
 		cluster.SetName(name)
 		cluster.SetNamespace(name)
@@ -428,6 +433,253 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestCreateCAPIAWS(t *testing.T) {
+	c := fakeCAPIClient()
+	m := New(c, config.Config{AWSRegion: "us-east-1"}, discardLogger)
+
+	err := m.CreateCAPI(context.Background(), CAPIClusterOpts{
+		Name:          "k8s-aws-1",
+		InfraProvider: "aws",
+		Region:        "us-east-1",
+		SSHKeyName:    "test-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateCAPI AWS failed: %v", err)
+	}
+
+	awsCluster, err := c.Get(context.Background(), client.GVRAWSCluster, "k8s-aws-1", "k8s-aws-1")
+	if err != nil {
+		t.Fatalf("AWSCluster not created: %v", err)
+	}
+	spec, _ := awsCluster.Object["spec"].(map[string]interface{})
+	if spec["region"] != "us-east-1" {
+		t.Errorf("AWSCluster region = %v, want us-east-1", spec["region"])
+	}
+	if spec["sshKeyName"] != "test-key" {
+		t.Errorf("AWSCluster sshKeyName = %v, want test-key", spec["sshKeyName"])
+	}
+
+	_, err = c.Get(context.Background(), client.GVRAWSMachineTemplate, "k8s-aws-1", "k8s-aws-1-control-plane")
+	if err != nil {
+		t.Fatalf("AWSMachineTemplate control-plane not created: %v", err)
+	}
+
+	kcp, err := c.Get(context.Background(), client.GVRKubeadmControlPlane, "k8s-aws-1", "k8s-aws-1-control-plane")
+	if err != nil {
+		t.Fatalf("KubeadmControlPlane not created: %v", err)
+	}
+	kcpSpec, _ := kcp.Object["spec"].(map[string]interface{})
+	if kcpSpec["version"] != "v1.34.8" {
+		t.Errorf("KubeadmControlPlane version = %v, want v1.34.8", kcpSpec["version"])
+	}
+	if kcpSpec["replicas"] != int64(1) {
+		t.Errorf("KubeadmControlPlane replicas = %v, want 1", kcpSpec["replicas"])
+	}
+
+	cluster, err := c.Get(context.Background(), client.GVRCAPICluster, "k8s-aws-1", "k8s-aws-1")
+	if err != nil {
+		t.Fatalf("CAPI Cluster not created: %v", err)
+	}
+	clusterSpec, _ := cluster.Object["spec"].(map[string]interface{})
+	infraRef, _ := clusterSpec["infrastructureRef"].(map[string]interface{})
+	if infraRef["kind"] != "AWSCluster" {
+		t.Errorf("infrastructureRef.kind = %v, want AWSCluster", infraRef["kind"])
+	}
+	cpRef, _ := clusterSpec["controlPlaneRef"].(map[string]interface{})
+	if cpRef["kind"] != "KubeadmControlPlane" {
+		t.Errorf("controlPlaneRef.kind = %v, want KubeadmControlPlane", cpRef["kind"])
+	}
+
+	_, err = c.Get(context.Background(), client.GVRAWSMachineTemplate, "k8s-aws-1", "k8s-aws-1-workers")
+	if err != nil {
+		t.Fatalf("AWSMachineTemplate workers not created: %v", err)
+	}
+
+	_, err = c.Get(context.Background(), client.GVRKubeadmConfigTemplate, "k8s-aws-1", "k8s-aws-1-workers")
+	if err != nil {
+		t.Fatalf("KubeadmConfigTemplate not created: %v", err)
+	}
+
+	md, err := c.Get(context.Background(), client.GVRCAPIMachineDeployment, "k8s-aws-1", "k8s-aws-1-workers")
+	if err != nil {
+		t.Fatalf("MachineDeployment not created: %v", err)
+	}
+	mdSpec, _ := md.Object["spec"].(map[string]interface{})
+	if mdSpec["replicas"] != int64(2) {
+		t.Errorf("MachineDeployment replicas = %v, want 2", mdSpec["replicas"])
+	}
+
+	mc, err := c.Get(context.Background(), client.GVRManagedCluster, "", "k8s-aws-1")
+	if err != nil {
+		t.Fatalf("ManagedCluster not created: %v", err)
+	}
+	mcLabels := mc.GetLabels()
+	if mcLabels["vendor"] != "Kubernetes" {
+		t.Errorf("ManagedCluster vendor = %s, want Kubernetes", mcLabels["vendor"])
+	}
+}
+
+func TestCreateCAPIAWSRequiresRegion(t *testing.T) {
+	c := fakeCAPIClient()
+	m := New(c, config.Config{}, discardLogger)
+
+	err := m.CreateCAPI(context.Background(), CAPIClusterOpts{
+		Name:          "k8s-no-region",
+		InfraProvider: "aws",
+	})
+	if err == nil || !contains(err.Error(), "region is required") {
+		t.Fatalf("expected region error, got: %v", err)
+	}
+}
+
+func TestDestroyCAPIAWS(t *testing.T) {
+	awsCluster := &unstructured.Unstructured{}
+	awsCluster.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta2", Kind: "AWSCluster",
+	})
+	awsCluster.SetName("k8s-aws-1")
+	awsCluster.SetNamespace("k8s-aws-1")
+
+	cpTemplate := &unstructured.Unstructured{}
+	cpTemplate.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta2", Kind: "AWSMachineTemplate",
+	})
+	cpTemplate.SetName("k8s-aws-1-control-plane")
+	cpTemplate.SetNamespace("k8s-aws-1")
+
+	kcp := &unstructured.Unstructured{}
+	kcp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "controlplane.cluster.x-k8s.io", Version: "v1beta1", Kind: "KubeadmControlPlane",
+	})
+	kcp.SetName("k8s-aws-1-control-plane")
+	kcp.SetNamespace("k8s-aws-1")
+
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cluster.x-k8s.io", Version: "v1beta2", Kind: "Cluster",
+	})
+	cluster.SetName("k8s-aws-1")
+	cluster.SetNamespace("k8s-aws-1")
+
+	workerTemplate := &unstructured.Unstructured{}
+	workerTemplate.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "infrastructure.cluster.x-k8s.io", Version: "v1beta2", Kind: "AWSMachineTemplate",
+	})
+	workerTemplate.SetName("k8s-aws-1-workers")
+	workerTemplate.SetNamespace("k8s-aws-1")
+
+	bootstrapTemplate := &unstructured.Unstructured{}
+	bootstrapTemplate.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "bootstrap.cluster.x-k8s.io", Version: "v1beta1", Kind: "KubeadmConfigTemplate",
+	})
+	bootstrapTemplate.SetName("k8s-aws-1-workers")
+	bootstrapTemplate.SetNamespace("k8s-aws-1")
+
+	md := &unstructured.Unstructured{}
+	md.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cluster.x-k8s.io", Version: "v1beta1", Kind: "MachineDeployment",
+	})
+	md.SetName("k8s-aws-1-workers")
+	md.SetNamespace("k8s-aws-1")
+
+	mc := &unstructured.Unstructured{}
+	mc.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cluster.open-cluster-management.io", Version: "v1", Kind: "ManagedCluster",
+	})
+	mc.SetName("k8s-aws-1")
+
+	c := fakeCAPIClient(awsCluster, cpTemplate, kcp, cluster, workerTemplate, bootstrapTemplate, md, mc)
+	m := New(c, config.Config{}, discardLogger)
+
+	if err := m.DestroyCAPI(context.Background(), "k8s-aws-1"); err != nil {
+		t.Fatalf("DestroyCAPI AWS failed: %v", err)
+	}
+
+	_, err := c.Get(context.Background(), client.GVRAWSCluster, "k8s-aws-1", "k8s-aws-1")
+	if err == nil {
+		t.Error("AWSCluster should be deleted")
+	}
+	_, err = c.Get(context.Background(), client.GVRKubeadmControlPlane, "k8s-aws-1", "k8s-aws-1-control-plane")
+	if err == nil {
+		t.Error("KubeadmControlPlane should be deleted")
+	}
+	_, err = c.Get(context.Background(), client.GVRCAPICluster, "k8s-aws-1", "k8s-aws-1")
+	if err == nil {
+		t.Error("CAPI Cluster should be deleted")
+	}
+	_, err = c.Get(context.Background(), client.GVRManagedCluster, "", "k8s-aws-1")
+	if err == nil {
+		t.Error("ManagedCluster should be deleted")
+	}
+}
+
+func TestCreateCAPIAWSDefaults(t *testing.T) {
+	c := fakeCAPIClient()
+	m := New(c, config.Config{Platform: "aws", AWSRegion: "eu-west-1"}, discardLogger)
+
+	opts := CAPIClusterOpts{Name: "test-defaults-aws"}
+	m.applyCAPIDefaults(&opts)
+
+	if opts.InfraProvider != "aws" {
+		t.Errorf("InfraProvider = %s, want aws", opts.InfraProvider)
+	}
+	if opts.Region != "eu-west-1" {
+		t.Errorf("Region = %s, want eu-west-1", opts.Region)
+	}
+	if opts.InstanceType != "t3.large" {
+		t.Errorf("InstanceType = %s, want t3.large", opts.InstanceType)
+	}
+	if opts.RootVolumeSize != 80 {
+		t.Errorf("RootVolumeSize = %d, want 80", opts.RootVolumeSize)
+	}
+}
+
+func TestBuildAWSCluster(t *testing.T) {
+	opts := CAPIClusterOpts{
+		Name:      "test-aws",
+		Namespace: "test-aws",
+		Region:    "us-east-1",
+		SSHKeyName: "my-key",
+	}
+	obj := buildAWSCluster(opts)
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	if spec["region"] != "us-east-1" {
+		t.Errorf("region = %v, want us-east-1", spec["region"])
+	}
+	if spec["sshKeyName"] != "my-key" {
+		t.Errorf("sshKeyName = %v, want my-key", spec["sshKeyName"])
+	}
+}
+
+func TestBuildAWSMachineTemplateWithAMI(t *testing.T) {
+	opts := CAPIClusterOpts{
+		Name:           "test-ami",
+		Namespace:      "test-ami",
+		InstanceType:   "t3.xlarge",
+		AMI:            "ami-12345678",
+		RootVolumeSize: 100,
+		SSHKeyName:     "my-key",
+	}
+	obj := buildAWSMachineTemplate("test-ami-cp", opts)
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	tmpl, _ := spec["template"].(map[string]interface{})
+	tmplSpec, _ := tmpl["spec"].(map[string]interface{})
+	if tmplSpec["instanceType"] != "t3.xlarge" {
+		t.Errorf("instanceType = %v, want t3.xlarge", tmplSpec["instanceType"])
+	}
+	ami, _ := tmplSpec["ami"].(map[string]interface{})
+	if ami["id"] != "ami-12345678" {
+		t.Errorf("ami.id = %v, want ami-12345678", ami["id"])
+	}
+	rootVol, _ := tmplSpec["rootVolume"].(map[string]interface{})
+	if rootVol["size"] != int64(100) {
+		t.Errorf("rootVolume.size = %v, want 100", rootVol["size"])
+	}
+	if tmplSpec["sshKeyName"] != "my-key" {
+		t.Errorf("sshKeyName = %v, want my-key", tmplSpec["sshKeyName"])
+	}
 }
 
 func TestGetLabelsEmpty(t *testing.T) {
