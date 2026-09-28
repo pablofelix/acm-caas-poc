@@ -662,7 +662,7 @@ func TestBuildAWSMachineTemplateWithAMI(t *testing.T) {
 		RootVolumeSize: 100,
 		SSHKeyName:     "my-key",
 	}
-	obj := buildAWSMachineTemplate("test-ami-cp", opts)
+	obj := buildAWSMachineTemplate("test-ami-cp", opts, "control-plane.cluster-api-provider-aws.sigs.k8s.io")
 	spec, _ := obj.Object["spec"].(map[string]interface{})
 	tmpl, _ := spec["template"].(map[string]interface{})
 	tmplSpec, _ := tmpl["spec"].(map[string]interface{})

@@ -182,12 +182,15 @@ func buildAWSCluster(opts CAPIClusterOpts) *unstructured.Unstructured {
 	}
 }
 
-func buildAWSMachineTemplate(name string, opts CAPIClusterOpts) *unstructured.Unstructured {
+func buildAWSMachineTemplate(name string, opts CAPIClusterOpts, iamProfile string) *unstructured.Unstructured {
 	machineSpec := map[string]interface{}{
 		"instanceType": opts.InstanceType,
 		"rootVolume": map[string]interface{}{
 			"size": opts.RootVolumeSize,
 		},
+	}
+	if iamProfile != "" {
+		machineSpec["iamInstanceProfile"] = iamProfile
 	}
 	if opts.SSHKeyName != "" {
 		machineSpec["sshKeyName"] = opts.SSHKeyName

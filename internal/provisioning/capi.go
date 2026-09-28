@@ -112,7 +112,7 @@ func (m *Manager) createCAPIAWS(ctx context.Context, opts CAPIClusterOpts) error
 		return fmt.Errorf("creating AWSCluster %s: %w", opts.Name, err)
 	}
 
-	cpMachineTemplate := buildAWSMachineTemplate(opts.Name+"-control-plane", opts)
+	cpMachineTemplate := buildAWSMachineTemplate(opts.Name+"-control-plane", opts, "control-plane.cluster-api-provider-aws.sigs.k8s.io")
 	if err := m.client.CreateIfNotExists(ctx, client.GVRAWSMachineTemplate, opts.Namespace, cpMachineTemplate); err != nil {
 		return fmt.Errorf("creating AWSMachineTemplate %s-control-plane: %w", opts.Name, err)
 	}
@@ -127,7 +127,7 @@ func (m *Manager) createCAPIAWS(ctx context.Context, opts CAPIClusterOpts) error
 		return fmt.Errorf("creating CAPI Cluster %s: %w", opts.Name, err)
 	}
 
-	workerMachineTemplate := buildAWSMachineTemplate(opts.Name+"-workers", opts)
+	workerMachineTemplate := buildAWSMachineTemplate(opts.Name+"-workers", opts, "nodes.cluster-api-provider-aws.sigs.k8s.io")
 	if err := m.client.CreateIfNotExists(ctx, client.GVRAWSMachineTemplate, opts.Namespace, workerMachineTemplate); err != nil {
 		return fmt.Errorf("creating AWSMachineTemplate %s-workers: %w", opts.Name, err)
 	}

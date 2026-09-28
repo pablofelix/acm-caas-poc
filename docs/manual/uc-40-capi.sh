@@ -48,7 +48,11 @@ echo "5. Create namespace for the CAPI cluster"
 kubectl create namespace "$CLUSTER_NAME" --dry-run=client -o yaml | kubectl apply -f -
 
 echo ""
-echo "6. Create AWS SSH key pair (if not exists)"
+echo "6. Create IAM instance profiles via clusterawsadm (one-time setup)"
+clusterawsadm bootstrap iam create-cloudformation-stack --region "$REGION"
+
+echo ""
+echo "7. Create AWS SSH key pair (if not exists)"
 aws ec2 describe-key-pairs --key-names "$SSH_KEY_NAME" --region "$REGION" 2>/dev/null || \
   aws ec2 create-key-pair --key-name "$SSH_KEY_NAME" --region "$REGION" --query KeyPairId --output text
 
@@ -78,6 +82,7 @@ metadata:
 spec:
   template:
     spec:
+      iamInstanceProfile: control-plane.cluster-api-provider-aws.sigs.k8s.io
       instanceType: ${INSTANCE_TYPE}
       sshKeyName: ${SSH_KEY_NAME}
       rootVolume:
@@ -165,6 +170,7 @@ spec:
   template:
     spec:
       instanceType: ${INSTANCE_TYPE}
+      iamInstanceProfile: nodes.cluster-api-provider-aws.sigs.k8s.io
       sshKeyName: ${SSH_KEY_NAME}
       rootVolume:
         size: 80
