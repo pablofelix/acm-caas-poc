@@ -196,12 +196,21 @@ func (m *Manager) upgradeCAPICRDs(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) applyCRDsViaDownload(ctx context.Context) ([]byte, error) {
-	curlOut, err := exec.Command("curl", "-sL",
-		"https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.14.2/cluster-api-components.yaml",
-		"-o", "/tmp/capi-components-v1142.yaml",
-	).CombinedOutput()
-	if err != nil {
-		return curlOut, fmt.Errorf("downloading CRDs: %w", err)
+	if m.curlExec != nil {
+		if _, err := m.curlExec("-sL",
+			"https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.14.2/cluster-api-components.yaml",
+			"-o", "/tmp/capi-components-v1142.yaml",
+		); err != nil {
+			return nil, fmt.Errorf("downloading CRDs: %w", err)
+		}
+	} else {
+		curlOut, err := exec.Command("curl", "-sL",
+			"https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.14.2/cluster-api-components.yaml",
+			"-o", "/tmp/capi-components-v1142.yaml",
+		).CombinedOutput()
+		if err != nil {
+			return curlOut, fmt.Errorf("downloading CRDs: %w", err)
+		}
 	}
 
 	return m.runKubectl("apply", "--server-side", "--force-conflicts", "-f", "/tmp/capi-components-v1142.yaml")

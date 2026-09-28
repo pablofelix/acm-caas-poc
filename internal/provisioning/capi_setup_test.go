@@ -498,6 +498,400 @@ func TestUpgradeCAPIWebhooksSkipsV1beta2(t *testing.T) {
 	}
 }
 
+func TestSetupCAPIControllersFullInstall(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.clusterctlExec = func(args ...string) ([]byte, error) {
+		return []byte("installed"), nil
+	}
+	m.ocExec = func(args ...string) ([]byte, error) { return []byte("ok"), nil }
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "get" && (strings.HasSuffix(args[1], "webhookconfiguration") || strings.HasSuffix(args[1], "webhookconfigurations")) {
+			return nil, fmt.Errorf("not found")
+		}
+		return []byte("ok"), nil
+	}
+	m.awsExec = func(args ...string) ([]byte, error) {
+		if args[1] == "describe-key-pairs" {
+			return json.Marshal(map[string]interface{}{"KeyPairs": []interface{}{}})
+		}
+		return []byte("key-id"), nil
+	}
+
+	result, err := m.SetupCAPIControllers(context.Background(), CAPISetupOpts{
+		InfraProviders: []string{"aws"},
+		SSHKeyName:     "test-key",
+		WaitTimeout:    1 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.ControllersInstalled {
+		t.Error("expected controllers installed")
+	}
+	if !result.SCCsGranted {
+		t.Error("expected SCCs granted")
+	}
+	if result.SSHKeyName != "test-key" {
+		t.Errorf("expected SSH key name test-key, got %s", result.SSHKeyName)
+	}
+	if !result.SSHKeyCreated {
+		t.Error("expected SSH key created")
+	}
+}
+
+func TestSetupCAPIControllersInstallError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.clusterctlExec = func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("clusterctl failed")
+	}
+
+	result, err := m.SetupCAPIControllers(context.Background(), CAPISetupOpts{
+		InfraProviders: []string{"aws"},
+		WaitTimeout:    1 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error on install failure")
+	}
+	if result.ControllersInstalled {
+		t.Error("should not mark installed on error")
+	}
+}
+
+func TestUpgradeCAPICRDsNeedUpgrade(t *testing.T) {
+	machineCRD := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata":   map[string]interface{}{"name": "machines.cluster.x-k8s.io"},
+			"spec": map[string]interface{}{
+				"versions": []interface{}{
+					map[string]interface{}{"name": "v1beta1"},
+				},
+			},
+		},
+	}
+
+	c := fakeSetupClient(machineCRD)
+	m := setupManager(c)
+
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		return []byte("applied"), nil
+	}
+
+	upgraded, err := m.upgradeCAPICRDs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !upgraded {
+		t.Error("expected CRDs to be upgraded when only v1beta1")
+	}
+}
+
+func TestCAPIControllerStatusWithDeployments(t *testing.T) {
+	var objs []runtime.Object
+	for ns, info := range capiNamespaces {
+		dep := &unstructured.Unstructured{}
+		dep.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
+		dep.SetName(info.Deployment)
+		dep.SetNamespace(ns)
+		dep.Object["status"] = map[string]interface{}{
+			"readyReplicas": int64(1),
+		}
+		dep.Object["spec"] = map[string]interface{}{
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"containers": []interface{}{
+						map[string]interface{}{
+							"image": "registry.k8s.io/cluster-api/cluster-api-controller:v1.14.2",
+						},
+					},
+				},
+			},
+		}
+		objs = append(objs, dep)
+	}
+	for _, infra := range capiInfraNamespaces {
+		dep := &unstructured.Unstructured{}
+		dep.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"})
+		dep.SetName(infra.Deployment)
+		dep.SetNamespace(infra.Namespace)
+		dep.Object["status"] = map[string]interface{}{
+			"readyReplicas": int64(1),
+		}
+		dep.Object["spec"] = map[string]interface{}{
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"containers": []interface{}{
+						map[string]interface{}{
+							"image": "registry.k8s.io/cluster-api-aws/cluster-api-aws-controller:v2.13.0",
+						},
+					},
+				},
+			},
+		}
+		objs = append(objs, dep)
+	}
+
+	c := fakeSetupClient(objs...)
+	m := setupManager(c)
+
+	statuses, err := m.CAPIControllerStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, s := range statuses {
+		if !s.Ready {
+			t.Errorf("expected ready for %s/%s", s.Namespace, s.Deployment)
+		}
+		if s.Image == "" {
+			t.Errorf("expected image for %s/%s", s.Namespace, s.Deployment)
+		}
+	}
+}
+
+func TestFormatCAPIControllerStatus(t *testing.T) {
+	statuses := []CAPIControllerStatus{
+		{Namespace: "capi-system", Deployment: "capi-controller-manager", Ready: true, Image: "test:v1"},
+		{Namespace: "capa-system", Deployment: "capa-controller-manager", Ready: false},
+	}
+	output := FormatCAPIControllerStatus(statuses)
+	if !strings.Contains(output, "ready") {
+		t.Error("expected 'ready' in output")
+	}
+	if !strings.Contains(output, "not ready") {
+		t.Error("expected 'not ready' in output")
+	}
+	if !strings.Contains(output, "test:v1") {
+		t.Error("expected image in output")
+	}
+}
+
+func TestRestartCAPIDeployments(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	var restartedNamespaces []string
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		if args[0] == "rollout" && args[1] == "restart" {
+			for i, a := range args {
+				if a == "-n" && i+1 < len(args) {
+					restartedNamespaces = append(restartedNamespaces, args[i+1])
+				}
+			}
+		}
+		return []byte("ok"), nil
+	}
+
+	err := m.restartCAPIDeployments(context.Background(), []string{"aws"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(restartedNamespaces) != 4 {
+		t.Errorf("expected 4 restarts (3 core + 1 infra), got %d", len(restartedNamespaces))
+	}
+}
+
+func TestDeleteAWSSSHKeyPairError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.awsExec = func(args ...string) ([]byte, error) {
+		return []byte("error"), fmt.Errorf("delete failed")
+	}
+
+	err := m.DeleteAWSSSHKeyPair(context.Background(), "us-east-1", "test-key")
+	if err == nil {
+		t.Fatal("expected error on delete failure")
+	}
+}
+
+func TestRunClusterctlDefault(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	_, err := m.runClusterctl("version")
+	if err == nil {
+		t.Skip("clusterctl not available")
+	}
+}
+
+func TestRunOCDefault(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	_, err := m.runOC("version")
+	if err == nil {
+		t.Skip("oc not available")
+	}
+}
+
+func TestRunKubectlDefault(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	_, err := m.runKubectl("version", "--client")
+	if err == nil {
+		t.Skip("kubectl not available")
+	}
+}
+
+func TestUpgradeCAPIWebhooksParseError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		if args[0] == "get" {
+			return []byte("not json"), nil
+		}
+		return []byte("ok"), nil
+	}
+
+	_, err := m.upgradeCAPIWebhooks(context.Background())
+	if err == nil {
+		t.Fatal("expected error on invalid JSON")
+	}
+}
+
+func TestWaitForCAPIPods(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		return []byte("deployment successfully rolled out"), nil
+	}
+
+	err := m.waitForCAPIPods(context.Background(), CAPISetupOpts{
+		InfraProviders: []string{"aws"},
+		WaitTimeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWaitForCAPIPodsTimeout(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("timed out")
+	}
+
+	err := m.waitForCAPIPods(context.Background(), CAPISetupOpts{
+		InfraProviders: []string{"aws"},
+		WaitTimeout:    1 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestGrantCAPISCCsError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.ocExec = func(args ...string) ([]byte, error) {
+		return []byte("forbidden"), fmt.Errorf("permission denied")
+	}
+
+	err := m.grantCAPISCCs(context.Background(), []string{"aws"})
+	if err == nil {
+		t.Fatal("expected error on SCC grant failure")
+	}
+}
+
+func TestInstallCAPIControllersError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.clusterctlExec = func(args ...string) ([]byte, error) {
+		return []byte("error"), fmt.Errorf("clusterctl failed")
+	}
+
+	err := m.installCAPIControllers(context.Background(), CAPISetupOpts{
+		InfraProviders: []string{"aws"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestApplyCRDsViaDownload(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.curlExec = func(args ...string) ([]byte, error) {
+		return []byte("downloaded"), nil
+	}
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		return []byte("applied"), nil
+	}
+
+	out, err := m.applyCRDsViaDownload(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "applied" {
+		t.Errorf("expected 'applied', got %s", string(out))
+	}
+}
+
+func TestApplyCRDsViaDownloadCurlError(t *testing.T) {
+	c := fakeSetupClient()
+	m := setupManager(c)
+
+	m.curlExec = func(args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("curl failed")
+	}
+
+	_, err := m.applyCRDsViaDownload(context.Background())
+	if err == nil {
+		t.Fatal("expected error on curl failure")
+	}
+}
+
+func TestUpgradeCAPICRDsFallback(t *testing.T) {
+	machineCRD := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata":   map[string]interface{}{"name": "machines.cluster.x-k8s.io"},
+			"spec": map[string]interface{}{
+				"versions": []interface{}{
+					map[string]interface{}{"name": "v1beta1"},
+				},
+			},
+		},
+	}
+
+	c := fakeSetupClient(machineCRD)
+	m := setupManager(c)
+
+	callCount := 0
+	m.kubectlExec = func(args ...string) ([]byte, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("server-side apply failed")
+		}
+		return []byte("applied via fallback"), nil
+	}
+	m.curlExec = func(args ...string) ([]byte, error) {
+		return []byte("downloaded"), nil
+	}
+
+	upgraded, err := m.upgradeCAPICRDs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !upgraded {
+		t.Error("expected CRDs upgraded via fallback")
+	}
+}
+
 func TestEnsureAWSSSHKeyPairUsesConfigRegion(t *testing.T) {
 	c := fakeSetupClient()
 	m := setupManager(c)

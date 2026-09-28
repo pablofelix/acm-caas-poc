@@ -57,6 +57,7 @@ type Manager struct {
 	clusterctlExec func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("clusterctl", ...)
 	ocExec         func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("oc", ...)
 	kubectlExec    func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("kubectl", ...)
+	curlExec       func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("curl", ...)
 }
 
 func New(c *client.Client, cfg config.Config, logger *slog.Logger) *Manager {
