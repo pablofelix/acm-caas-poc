@@ -16,7 +16,7 @@ import (
 func capiMachineDeployment(namespace, name string, replicas int64, annotations map[string]interface{}) *unstructured.Unstructured {
 	md := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cluster.x-k8s.io/v1beta1",
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
 			"kind":       "MachineDeployment",
 			"metadata": map[string]interface{}{
 				"name":      name,

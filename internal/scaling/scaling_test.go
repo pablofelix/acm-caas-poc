@@ -977,7 +977,7 @@ func nodePool(name, namespace, clusterName string, replicas int64) *unstructured
 func capiMachineDeployment(name, namespace, clusterLabel string, replicas int64) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cluster.x-k8s.io/v1beta1",
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
 			"kind":       "MachineDeployment",
 			"metadata": map[string]interface{}{
 				"name":      name,
@@ -1239,7 +1239,7 @@ func TestMachineDeploymentInfoFromUnstructured(t *testing.T) {
 func TestMachineDeploymentInfoFromUnstructuredNoSpec(t *testing.T) {
 	md := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cluster.x-k8s.io/v1beta1",
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
 			"kind":       "MachineDeployment",
 			"metadata": map[string]interface{}{
 				"name":      "bare",
