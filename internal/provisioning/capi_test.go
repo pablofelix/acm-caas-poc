@@ -706,7 +706,7 @@ func TestBuildKubeadmControlPlaneCloudProviderFlags(t *testing.T) {
 		return spec["kubeadmConfigSpec"].(map[string]interface{})
 	}
 
-	// v1.34.8: no cloud-provider flags, but name template present
+	// v1.34.8: kubelet gets cloud-provider (still needed for CCM), but not apiserver/controller-manager
 	optsNew := CAPIClusterOpts{Name: "test", Namespace: "test", KubernetesVersion: "v1.34.8", ControlPlaneReplicas: 1}
 	kcpNew := buildKubeadmControlPlane(optsNew)
 	configNew := getKubeadmConfigSpec(kcpNew)
@@ -714,8 +714,8 @@ func TestBuildKubeadmControlPlaneCloudProviderFlags(t *testing.T) {
 		t.Error("v1.34.8: should not have clusterConfiguration with cloud-provider flags")
 	}
 	initNR := configNew["initConfiguration"].(map[string]interface{})["nodeRegistration"].(map[string]interface{})
-	if _, ok := initNR["kubeletExtraArgs"]; ok {
-		t.Error("v1.34.8: should not have kubeletExtraArgs")
+	if _, ok := initNR["kubeletExtraArgs"]; !ok {
+		t.Error("v1.34.8: should have kubeletExtraArgs for CCM uninitialized taint")
 	}
 	if initNR["name"] != "{{ ds.meta_data.local_hostname }}" {
 		t.Error("v1.34.8: should have name template in nodeRegistration")

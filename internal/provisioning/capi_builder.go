@@ -241,16 +241,15 @@ func buildAWSMachineTemplate(name string, opts CAPIClusterOpts, iamProfile strin
 }
 
 func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
-	nodeReg := map[string]interface{}{
-		"name": "{{ ds.meta_data.local_hostname }}",
+	cloudProviderArg := []interface{}{
+		map[string]interface{}{"name": "cloud-provider", "value": "external"},
 	}
 
-	minor := k8sMinorVersion(opts.KubernetesVersion)
-	if minor > 0 && minor < 31 {
-		cloudProviderArg := []interface{}{
-			map[string]interface{}{"name": "cloud-provider", "value": "external"},
-		}
-		nodeReg["kubeletExtraArgs"] = cloudProviderArg
+	// kubelet needs --cloud-provider=external so it adds the uninitialized taint
+	// that signals the CCM to set providerID. Deprecated in 1.31 but still required.
+	nodeReg := map[string]interface{}{
+		"name":             "{{ ds.meta_data.local_hostname }}",
+		"kubeletExtraArgs": cloudProviderArg,
 	}
 
 	kubeadmConfigSpec := map[string]interface{}{
@@ -262,10 +261,9 @@ func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
 		},
 	}
 
+	// --cloud-provider removed from apiserver/controller-manager in k8s 1.29
+	minor := k8sMinorVersion(opts.KubernetesVersion)
 	if minor > 0 && minor < 29 {
-		cloudProviderArg := []interface{}{
-			map[string]interface{}{"name": "cloud-provider", "value": "external"},
-		}
 		kubeadmConfigSpec["clusterConfiguration"] = map[string]interface{}{
 			"apiServer": map[string]interface{}{
 				"extraArgs": cloudProviderArg,
@@ -305,12 +303,9 @@ func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
 func buildKubeadmConfigTemplate(opts CAPIClusterOpts) *unstructured.Unstructured {
 	nodeRegistration := map[string]interface{}{
 		"name": "{{ ds.meta_data.local_hostname }}",
-	}
-	minor := k8sMinorVersion(opts.KubernetesVersion)
-	if minor > 0 && minor < 31 {
-		nodeRegistration["kubeletExtraArgs"] = []interface{}{
+		"kubeletExtraArgs": []interface{}{
 			map[string]interface{}{"name": "cloud-provider", "value": "external"},
-		}
+		},
 	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
