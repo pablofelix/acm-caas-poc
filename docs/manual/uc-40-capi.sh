@@ -108,24 +108,9 @@ spec:
         name: ${CLUSTER_NAME}-control-plane
   kubeadmConfigSpec:
     initConfiguration:
-      nodeRegistration:
-        kubeletExtraArgs:
-          - name: cloud-provider
-            value: external
+      nodeRegistration: {}
     joinConfiguration:
-      nodeRegistration:
-        kubeletExtraArgs:
-          - name: cloud-provider
-            value: external
-    clusterConfiguration:
-      apiServer:
-        extraArgs:
-          - name: cloud-provider
-            value: external
-      controllerManager:
-        extraArgs:
-          - name: cloud-provider
-            value: external
+      nodeRegistration: {}
 EOF
 
 echo ""
@@ -189,9 +174,7 @@ spec:
     spec:
       joinConfiguration:
         nodeRegistration:
-          kubeletExtraArgs:
-            - name: cloud-provider
-              value: external
+          name: '{{ ds.meta_data.local_hostname }}'
 EOF
 
 echo ""

@@ -682,6 +682,73 @@ func TestBuildAWSMachineTemplateWithAMI(t *testing.T) {
 	}
 }
 
+func TestK8sMinorVersion(t *testing.T) {
+	cases := []struct {
+		version string
+		want    int
+	}{
+		{"v1.34.8", 34},
+		{"v1.30.0", 30},
+		{"v1.28.5", 28},
+		{"1.31.2", 31},
+		{"bad", 0},
+	}
+	for _, tc := range cases {
+		if got := k8sMinorVersion(tc.version); got != tc.want {
+			t.Errorf("k8sMinorVersion(%q) = %d, want %d", tc.version, got, tc.want)
+		}
+	}
+}
+
+func TestBuildKubeadmControlPlaneCloudProviderFlags(t *testing.T) {
+	getKubeadmConfigSpec := func(obj *unstructured.Unstructured) map[string]interface{} {
+		spec := obj.Object["spec"].(map[string]interface{})
+		return spec["kubeadmConfigSpec"].(map[string]interface{})
+	}
+
+	// v1.34.8: no cloud-provider flags, but name template present
+	optsNew := CAPIClusterOpts{Name: "test", Namespace: "test", KubernetesVersion: "v1.34.8", ControlPlaneReplicas: 1}
+	kcpNew := buildKubeadmControlPlane(optsNew)
+	configNew := getKubeadmConfigSpec(kcpNew)
+	if _, ok := configNew["clusterConfiguration"]; ok {
+		t.Error("v1.34.8: should not have clusterConfiguration with cloud-provider flags")
+	}
+	initNR := configNew["initConfiguration"].(map[string]interface{})["nodeRegistration"].(map[string]interface{})
+	if _, ok := initNR["kubeletExtraArgs"]; ok {
+		t.Error("v1.34.8: should not have kubeletExtraArgs")
+	}
+	if initNR["name"] != "{{ ds.meta_data.local_hostname }}" {
+		t.Error("v1.34.8: should have name template in nodeRegistration")
+	}
+
+	// v1.30.0: kubelet gets cloud-provider, but not apiserver/controller-manager
+	optsMid := CAPIClusterOpts{Name: "test", Namespace: "test", KubernetesVersion: "v1.30.0", ControlPlaneReplicas: 1}
+	kcpMid := buildKubeadmControlPlane(optsMid)
+	configMid := getKubeadmConfigSpec(kcpMid)
+	if _, ok := configMid["clusterConfiguration"]; ok {
+		t.Error("v1.30.0: should not have clusterConfiguration with cloud-provider flags")
+	}
+	initNRMid := configMid["initConfiguration"].(map[string]interface{})["nodeRegistration"].(map[string]interface{})
+	if _, ok := initNRMid["kubeletExtraArgs"]; !ok {
+		t.Error("v1.30.0: should have kubeletExtraArgs with cloud-provider")
+	}
+
+	// v1.28.0: all components get cloud-provider
+	optsOld := CAPIClusterOpts{Name: "test", Namespace: "test", KubernetesVersion: "v1.28.0", ControlPlaneReplicas: 1}
+	kcpOld := buildKubeadmControlPlane(optsOld)
+	configOld := getKubeadmConfigSpec(kcpOld)
+	cc, ok := configOld["clusterConfiguration"].(map[string]interface{})
+	if !ok {
+		t.Fatal("v1.28.0: should have clusterConfiguration")
+	}
+	if _, ok := cc["apiServer"]; !ok {
+		t.Error("v1.28.0: should have apiServer extraArgs")
+	}
+	if _, ok := cc["controllerManager"]; !ok {
+		t.Error("v1.28.0: should have controllerManager extraArgs")
+	}
+}
+
 func TestGetLabelsEmpty(t *testing.T) {
 	_, ok := getLabels(map[string]interface{}{})
 	if ok {

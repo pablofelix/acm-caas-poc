@@ -2,9 +2,29 @@ package provisioning
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func copyMap(m map[string]interface{}) map[string]interface{} {
+	c := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+func k8sMinorVersion(version string) int {
+	v := strings.TrimPrefix(version, "v")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0
+	}
+	minor, _ := strconv.Atoi(parts[1])
+	return minor
+}
 
 func buildCAPICluster(opts CAPIClusterOpts) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
@@ -221,9 +241,41 @@ func buildAWSMachineTemplate(name string, opts CAPIClusterOpts, iamProfile strin
 }
 
 func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
-	cloudProviderArg := []interface{}{
-		map[string]interface{}{"name": "cloud-provider", "value": "external"},
+	nodeReg := map[string]interface{}{
+		"name": "{{ ds.meta_data.local_hostname }}",
 	}
+
+	minor := k8sMinorVersion(opts.KubernetesVersion)
+	if minor > 0 && minor < 31 {
+		cloudProviderArg := []interface{}{
+			map[string]interface{}{"name": "cloud-provider", "value": "external"},
+		}
+		nodeReg["kubeletExtraArgs"] = cloudProviderArg
+	}
+
+	kubeadmConfigSpec := map[string]interface{}{
+		"initConfiguration": map[string]interface{}{
+			"nodeRegistration": nodeReg,
+		},
+		"joinConfiguration": map[string]interface{}{
+			"nodeRegistration": copyMap(nodeReg),
+		},
+	}
+
+	if minor > 0 && minor < 29 {
+		cloudProviderArg := []interface{}{
+			map[string]interface{}{"name": "cloud-provider", "value": "external"},
+		}
+		kubeadmConfigSpec["clusterConfiguration"] = map[string]interface{}{
+			"apiServer": map[string]interface{}{
+				"extraArgs": cloudProviderArg,
+			},
+			"controllerManager": map[string]interface{}{
+				"extraArgs": cloudProviderArg,
+			},
+		}
+	}
+
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "controlplane.cluster.x-k8s.io/v1beta2",
@@ -244,32 +296,22 @@ func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
 						},
 					},
 				},
-				"kubeadmConfigSpec": map[string]interface{}{
-					"initConfiguration": map[string]interface{}{
-						"nodeRegistration": map[string]interface{}{
-							"kubeletExtraArgs": cloudProviderArg,
-						},
-					},
-					"joinConfiguration": map[string]interface{}{
-						"nodeRegistration": map[string]interface{}{
-							"kubeletExtraArgs": cloudProviderArg,
-						},
-					},
-					"clusterConfiguration": map[string]interface{}{
-						"apiServer": map[string]interface{}{
-							"extraArgs": cloudProviderArg,
-						},
-						"controllerManager": map[string]interface{}{
-							"extraArgs": cloudProviderArg,
-						},
-					},
-				},
+				"kubeadmConfigSpec": kubeadmConfigSpec,
 			},
 		},
 	}
 }
 
 func buildKubeadmConfigTemplate(opts CAPIClusterOpts) *unstructured.Unstructured {
+	nodeRegistration := map[string]interface{}{
+		"name": "{{ ds.meta_data.local_hostname }}",
+	}
+	minor := k8sMinorVersion(opts.KubernetesVersion)
+	if minor > 0 && minor < 31 {
+		nodeRegistration["kubeletExtraArgs"] = []interface{}{
+			map[string]interface{}{"name": "cloud-provider", "value": "external"},
+		}
+	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "bootstrap.cluster.x-k8s.io/v1beta2",
@@ -282,11 +324,7 @@ func buildKubeadmConfigTemplate(opts CAPIClusterOpts) *unstructured.Unstructured
 				"template": map[string]interface{}{
 					"spec": map[string]interface{}{
 						"joinConfiguration": map[string]interface{}{
-							"nodeRegistration": map[string]interface{}{
-								"kubeletExtraArgs": []interface{}{
-									map[string]interface{}{"name": "cloud-provider", "value": "external"},
-								},
-							},
+							"nodeRegistration": nodeRegistration,
 						},
 					},
 				},
