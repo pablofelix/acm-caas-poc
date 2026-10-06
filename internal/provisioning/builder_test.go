@@ -155,9 +155,12 @@ func TestBuildClusterDeployment_AWSPlatform(t *testing.T) {
 	if aws["region"] != "us-east-1" {
 		t.Errorf("region = %v, want us-east-1", aws["region"])
 	}
-	// AWS should not have credentialsSecretRef
-	if _, ok := aws["credentialsSecretRef"]; ok {
-		t.Error("AWS should not have credentialsSecretRef")
+	credsRef, ok := aws["credentialsSecretRef"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected credentialsSecretRef for aws")
+	}
+	if credsRef["name"] != "aws-cluster-aws-creds" {
+		t.Errorf("credentialsSecretRef name = %v, want aws-cluster-aws-creds", credsRef["name"])
 	}
 
 	prov, _ := spec["provisioning"].(map[string]interface{})
@@ -264,7 +267,7 @@ func TestBuildNamespace(t *testing.T) {
 }
 
 func TestBuildCredentialsSecret(t *testing.T) {
-	obj := buildCredentialsSecret("spoke1", "my-api-key")
+	obj := buildCredentialsSecret("spoke1", ClusterOpts{Platform: "ibmcloud", IBMCloudAPIKey: "my-api-key"})
 	if obj.GetName() != "spoke1-ibmcloud-creds" {
 		t.Errorf("name = %s, want spoke1-ibmcloud-creds", obj.GetName())
 	}

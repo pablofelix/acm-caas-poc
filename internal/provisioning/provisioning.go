@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/pablofelix/acm-caas-poc/internal/client"
 	"github.com/pablofelix/acm-caas-poc/internal/config"
@@ -24,11 +25,13 @@ type ClusterOpts struct {
 	MasterType     string
 	WorkerReplicas int64
 	MasterReplicas int64
-	SSHKey         string
-	SSHPrivateKey  string
-	IBMCloudAPIKey string
-	PullSecret     string
-	ManifestsDir   string
+	SSHKey             string
+	SSHPrivateKey      string
+	IBMCloudAPIKey     string
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	PullSecret         string
+	ManifestsDir       string
 }
 
 type ClusterInfo struct {
@@ -47,6 +50,14 @@ type Manager struct {
 	client *client.Client
 	cfg    config.Config
 	logger *slog.Logger
+
+	iamURL  string // override for testing; defaults to https://iam.cloud.ibm.com
+	vpcURL  string // override for testing; defaults to https://{region}.iaas.cloud.ibm.com
+	awsExec        func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("aws", ...)
+	clusterctlExec func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("clusterctl", ...)
+	ocExec         func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("oc", ...)
+	kubectlExec    func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("kubectl", ...)
+	curlExec       func(args ...string) ([]byte, error) // override for testing; defaults to exec.Command("curl", ...)
 }
 
 func New(c *client.Client, cfg config.Config, logger *slog.Logger) *Manager {
@@ -65,19 +76,35 @@ func (m *Manager) applyDefaults(opts *ClusterOpts) {
 		opts.Platform = m.cfg.Platform
 	}
 	if opts.Region == "" {
-		opts.Region = m.cfg.IBMCloudRegion
+		if opts.Platform == "aws" {
+			opts.Region = m.cfg.AWSRegion
+		} else {
+			opts.Region = m.cfg.IBMCloudRegion
+		}
 	}
 	if opts.BaseDomain == "" {
-		opts.BaseDomain = m.cfg.BaseDomain
+		if opts.Platform == "aws" && m.cfg.AWSBaseDomain != "" {
+			opts.BaseDomain = m.cfg.AWSBaseDomain
+		} else {
+			opts.BaseDomain = m.cfg.BaseDomain
+		}
 	}
 	if opts.ImageSet == "" {
 		opts.ImageSet = m.cfg.ClusterImageSet
 	}
 	if opts.WorkerType == "" {
-		opts.WorkerType = m.cfg.DefaultWorkerType
+		if opts.Platform == "aws" {
+			opts.WorkerType = "m5.large"
+		} else {
+			opts.WorkerType = m.cfg.DefaultWorkerType
+		}
 	}
 	if opts.MasterType == "" {
-		opts.MasterType = m.cfg.DefaultMasterType
+		if opts.Platform == "aws" {
+			opts.MasterType = "m5.xlarge"
+		} else {
+			opts.MasterType = m.cfg.DefaultMasterType
+		}
 	}
 	if opts.WorkerReplicas == 0 {
 		opts.WorkerReplicas = int64(m.cfg.DefaultWorkerReplicas)
@@ -100,6 +127,9 @@ func (m *Manager) Create(ctx context.Context, opts ClusterOpts) error {
 	if opts.Platform == "ibmcloud" && opts.IBMCloudAPIKey == "" {
 		return fmt.Errorf("IBM Cloud API key is required (set IBMCLOUD_API_KEY or pass --api-key)")
 	}
+	if opts.Platform == "aws" && (opts.AWSAccessKeyID == "" || opts.AWSSecretAccessKey == "") {
+		return fmt.Errorf("AWS credentials are required (set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or place in ~/.aws/credentials)")
+	}
 	if opts.PullSecret == "" {
 		return fmt.Errorf("pull secret is required (set ACM_PULL_SECRET_PATH or pass --pull-secret)")
 	}
@@ -109,7 +139,7 @@ func (m *Manager) Create(ctx context.Context, opts ClusterOpts) error {
 		return fmt.Errorf("creating namespace %s: %w", opts.Name, err)
 	}
 
-	creds := buildCredentialsSecret(opts.Name, opts.IBMCloudAPIKey)
+	creds := buildCredentialsSecret(opts.Name, opts)
 	if err := m.client.CreateIfNotExists(ctx, client.GVRSecret, opts.Name, creds); err != nil {
 		return fmt.Errorf("creating credentials secret: %w", err)
 	}
@@ -195,6 +225,21 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 	return nil
 }
 
+func (m *Manager) DestroyIfFailed(ctx context.Context, name string) (bool, error) {
+	info, err := m.Status(ctx, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.FailureReason != "" {
+		m.logger.Info("provisioning.DestroyIfFailed: cleaning up failed cluster", "cluster", name, "reason", info.FailureReason)
+		return true, m.Destroy(ctx, name)
+	}
+	return false, nil
+}
+
 func (m *Manager) Status(ctx context.Context, name string) (*ClusterInfo, error) {
 	m.logger.Info("provisioning.Status", "cluster", name)
 	obj, err := m.client.Get(ctx, client.GVRClusterDeployment, name, name)
@@ -225,21 +270,53 @@ func (m *Manager) WaitForProvision(ctx context.Context, name string, timeout tim
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	watcher, err := m.client.Watch(ctx, client.GVRClusterDeployment, name, metav1.ListOptions{
-		FieldSelector: "metadata.name=" + name,
-	})
-	if err != nil {
-		return fmt.Errorf("watching ClusterDeployment %s: %w", name, err)
-	}
-	defer watcher.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("timed out waiting for cluster %s to provision", name)
+		}
 
+		// Check current state before watching (handles already-installed case and gets resourceVersion)
+		current, err := m.client.Get(ctx, client.GVRClusterDeployment, name, name)
+		if err != nil {
+			return fmt.Errorf("getting ClusterDeployment %s: %w", name, err)
+		}
+		info := parseClusterInfo(current.Object)
+		if info.FailureReason != "" {
+			return fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
+		}
+		if info.Installed {
+			return nil
+		}
+
+		rv := current.GetResourceVersion()
+		watcher, err := m.client.Watch(ctx, client.GVRClusterDeployment, name, metav1.ListOptions{
+			FieldSelector:   "metadata.name=" + name,
+			ResourceVersion: rv,
+		})
+		if err != nil {
+			return fmt.Errorf("watching ClusterDeployment %s: %w", name, err)
+		}
+
+		done, watchErr := m.drainProvisionWatch(ctx, watcher, name)
+		watcher.Stop()
+		if done {
+			return watchErr
+		}
+		// Watch channel closed (server-side timeout) — reconnect
+		m.logger.Info("provisioning.WaitForProvision: watch reconnecting", "cluster", name)
+	}
+}
+
+// drainProvisionWatch reads events until installed, failed, context cancelled, or channel closed.
+// Returns (true, err) when a terminal state is reached, (false, nil) when the channel closed and reconnection is needed.
+func (m *Manager) drainProvisionWatch(ctx context.Context, watcher watch.Interface, name string) (bool, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for cluster %s to provision", name)
+			return true, fmt.Errorf("timed out waiting for cluster %s to provision", name)
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				return fmt.Errorf("watch channel closed for cluster %s", name)
+				return false, nil
 			}
 			obj, ok := event.Object.(*unstructured.Unstructured)
 			if !ok {
@@ -247,10 +324,10 @@ func (m *Manager) WaitForProvision(ctx context.Context, name string, timeout tim
 			}
 			info := parseClusterInfo(obj.Object)
 			if info.FailureReason != "" {
-				return fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
+				return true, fmt.Errorf("cluster %s provisioning failed: %s", name, info.FailureReason)
 			}
 			if info.Installed {
-				return nil
+				return true, nil
 			}
 		}
 	}

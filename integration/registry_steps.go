@@ -31,11 +31,13 @@ func registerRegistrySteps(sc *godog.ScenarioContext, s *suiteContext) {
 }
 
 func (s *suiteContext) clusterExistsWithManifestWorks(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, err := s.fleet.GetCluster(ctx, name)
 	return err
 }
 
 func (s *suiteContext) iListRequiredImages(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	images, err := s.registry.ListRequiredImages(ctx, name)
 	if err != nil {
 		return err
@@ -52,6 +54,7 @@ func (s *suiteContext) receiveImageList() error {
 }
 
 func (s *suiteContext) iHaveRequiredImages(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	if len(s.images) == 0 {
 		return s.iListRequiredImages(ctx, name)
 	}
@@ -75,6 +78,7 @@ func (s *suiteContext) imagesHaveBeenMirrored(_ string) error {
 }
 
 func (s *suiteContext) iConfigureRegistryMirror(ctx context.Context, cluster, target string) error {
+	cluster = s.resolveCluster(cluster)
 	return s.registry.ConfigureMirror(ctx, registry.MirrorConfig{
 		ClusterName:    cluster,
 		MirrorRegistry: target,
@@ -83,6 +87,7 @@ func (s *suiteContext) iConfigureRegistryMirror(ctx context.Context, cluster, ta
 }
 
 func (s *suiteContext) imageRegistryExists(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	status, err := s.registry.GetMirrorStatus(ctx, name)
 	if err != nil {
 		return err
@@ -98,6 +103,7 @@ func (s *suiteContext) placementExists(_ string) error {
 }
 
 func (s *suiteContext) registryMirrorConfigured(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	status, err := s.registry.GetMirrorStatus(ctx, name)
 	if err != nil {
 		return fmt.Errorf("mirror not configured for %s: %w", name, err)
@@ -109,6 +115,7 @@ func (s *suiteContext) registryMirrorConfigured(ctx context.Context, name string
 }
 
 func (s *suiteContext) iGetMirrorStatus(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	status, err := s.registry.GetMirrorStatus(ctx, name)
 	if err != nil {
 		return err
@@ -125,10 +132,12 @@ func (s *suiteContext) receiveMirrorConfig() error {
 }
 
 func (s *suiteContext) iRemoveRegistryMirror(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	return s.registry.RemoveMirror(ctx, name)
 }
 
 func (s *suiteContext) imageRegistryRemoved(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	status, err := s.registry.GetMirrorStatus(ctx, name)
 	if err != nil {
 		return nil

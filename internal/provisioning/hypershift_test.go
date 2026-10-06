@@ -19,11 +19,12 @@ func fakeHyperShiftClient(objs ...runtime.Object) *client.Client {
 	scheme := runtime.NewScheme()
 	fake := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{
-			client.GVRHostedCluster:  "HostedClusterList",
-			client.GVRNodePool:       "NodePoolList",
-			client.GVRManagedCluster: "ManagedClusterList",
-			client.GVRNamespace:      "NamespaceList",
-			client.GVRSecret:         "SecretList",
+			client.GVRHostedCluster:    "HostedClusterList",
+			client.GVRNodePool:         "NodePoolList",
+			client.GVRManagedCluster:   "ManagedClusterList",
+			client.GVRNamespace:        "NamespaceList",
+			client.GVRSecret:           "SecretList",
+			client.GVRClusterImageSet:  "ClusterImageSetList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -445,5 +446,101 @@ func TestCreateHyperShiftManagedClusterError(t *testing.T) {
 	err := m.CreateHyperShift(context.Background(), testHyperShiftOpts())
 	if err == nil || !strings.Contains(err.Error(), "ManagedCluster") {
 		t.Fatalf("expected ManagedCluster error, got: %v", err)
+	}
+}
+
+func TestResolveHyperShiftReleaseImageFromClusterImageSet(t *testing.T) {
+	imageSet := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "hive.openshift.io/v1",
+			"kind":       "ClusterImageSet",
+			"metadata": map[string]interface{}{
+				"name": "img4.16.0-multi",
+			},
+			"spec": map[string]interface{}{
+				"releaseImage": "quay.io/openshift-release-dev/ocp-release@sha256:abc123",
+			},
+		},
+	}
+	c := fakeHyperShiftClient(imageSet)
+	m := New(c, testConfig(), discardLogger)
+
+	opts := &HyperShiftOpts{ReleaseImage: "img4.16.0-multi"}
+	err := m.resolveHyperShiftReleaseImage(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.ReleaseImage != "quay.io/openshift-release-dev/ocp-release@sha256:abc123" {
+		t.Fatalf("expected resolved image, got: %s", opts.ReleaseImage)
+	}
+}
+
+func TestResolveHyperShiftReleaseImagePassthrough(t *testing.T) {
+	c := fakeHyperShiftClient()
+	m := New(c, testConfig(), discardLogger)
+
+	opts := &HyperShiftOpts{ReleaseImage: "quay.io/openshift-release-dev/ocp-release:4.16.0"}
+	err := m.resolveHyperShiftReleaseImage(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.ReleaseImage != "quay.io/openshift-release-dev/ocp-release:4.16.0" {
+		t.Fatalf("image should be unchanged, got: %s", opts.ReleaseImage)
+	}
+}
+
+func TestResolveHyperShiftReleaseImageNotFound(t *testing.T) {
+	c := fakeHyperShiftClient()
+	m := New(c, testConfig(), discardLogger)
+
+	opts := &HyperShiftOpts{ReleaseImage: "nonexistent-image-set"}
+	err := m.resolveHyperShiftReleaseImage(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "resolving ClusterImageSet") {
+		t.Fatalf("expected resolution error, got: %v", err)
+	}
+}
+
+func TestResolveHyperShiftReleaseImageEmpty(t *testing.T) {
+	imageSet := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "hive.openshift.io/v1",
+			"kind":       "ClusterImageSet",
+			"metadata": map[string]interface{}{
+				"name": "empty-set",
+			},
+			"spec": map[string]interface{}{},
+		},
+	}
+	c := fakeHyperShiftClient(imageSet)
+	m := New(c, testConfig(), discardLogger)
+
+	opts := &HyperShiftOpts{ReleaseImage: "empty-set"}
+	err := m.resolveHyperShiftReleaseImage(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "no spec.releaseImage") {
+		t.Fatalf("expected empty image error, got: %v", err)
+	}
+}
+
+func TestCreateHyperShiftWithClusterImageSetResolution(t *testing.T) {
+	imageSet := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "hive.openshift.io/v1",
+			"kind":       "ClusterImageSet",
+			"metadata": map[string]interface{}{
+				"name": "img4.16.0-multi",
+			},
+			"spec": map[string]interface{}{
+				"releaseImage": "quay.io/openshift-release-dev/ocp-release@sha256:abc123",
+			},
+		},
+	}
+	c := fakeHyperShiftClient(imageSet)
+	m := New(c, testConfig(), discardLogger)
+
+	opts := testHyperShiftOpts()
+	opts.ReleaseImage = "img4.16.0-multi"
+	err := m.CreateHyperShift(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("CreateHyperShift with image set resolution failed: %v", err)
 	}
 }

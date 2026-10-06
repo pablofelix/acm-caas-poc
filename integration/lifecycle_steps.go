@@ -43,6 +43,8 @@ func registerLifecycleSteps(sc *godog.ScenarioContext, s *suiteContext) {
 }
 
 func (s *suiteContext) clusterDeploymentExists(ctx context.Context, name, ns string) error {
+	name = s.resolveCluster(name)
+	ns = s.resolveCluster(ns)
 	supported, err := s.lifecycle.ClusterSupportsLifecycle(ctx, ns, name)
 	if err != nil {
 		return err
@@ -146,6 +148,7 @@ func (s *suiteContext) availableTransitions(ctx context.Context, expected1, expe
 }
 
 func (s *suiteContext) eventuallyAvailable(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	timeout := 15 * time.Minute
 	interval := 10 * time.Second
 	deadline := time.After(timeout)
@@ -176,6 +179,7 @@ func (s *suiteContext) eventuallyAvailable(ctx context.Context, name string) err
 }
 
 func (s *suiteContext) noClusterDeploymentExists(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	supported, _ := s.lifecycle.ClusterSupportsLifecycle(ctx, name, name)
 	if supported {
 		return fmt.Errorf("ClusterDeployment exists for %s but should not", name)
@@ -184,6 +188,7 @@ func (s *suiteContext) noClusterDeploymentExists(ctx context.Context, name strin
 }
 
 func (s *suiteContext) iAttemptGetPowerState(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, s.err = s.lifecycle.GetPowerState(ctx, name, name)
 	return nil
 }
@@ -206,6 +211,7 @@ func (s *suiteContext) errorMessageIndicates(msg string) error {
 }
 
 func (s *suiteContext) iGetPowerState(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	state, err := s.lifecycle.GetPowerState(ctx, name, name)
 	if err != nil {
 		s.err = err
@@ -266,6 +272,7 @@ func (s *suiteContext) powerStateRemains(ctx context.Context, expected string) e
 }
 
 func (s *suiteContext) aManagedClusterExistsLifecycle(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, err := s.client.Get(ctx, client.GVRManagedCluster, "", name)
 	if err != nil {
 		return fmt.Errorf("ManagedCluster %s not found: %w", name, err)

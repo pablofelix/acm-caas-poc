@@ -3,8 +3,10 @@ package provisioning
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/pablofelix/acm-caas-poc/internal/client"
 )
@@ -61,6 +63,10 @@ func (m *Manager) CreateHyperShift(ctx context.Context, opts HyperShiftOpts) err
 	}
 	if opts.ReleaseImage == "" {
 		return fmt.Errorf("release image is required for HyperShift provisioning")
+	}
+
+	if err := m.resolveHyperShiftReleaseImage(ctx, &opts); err != nil {
+		return err
 	}
 
 	ns := buildNamespace(opts.Namespace)
@@ -169,4 +175,23 @@ func parseHyperShiftInfo(obj map[string]interface{}) *HyperShiftInfo {
 		}
 	}
 	return info
+}
+
+// resolveHyperShiftReleaseImage resolves a ClusterImageSet name to a release image URL.
+// If ReleaseImage already looks like an image reference (contains / or @), it's used as-is.
+func (m *Manager) resolveHyperShiftReleaseImage(ctx context.Context, opts *HyperShiftOpts) error {
+	if strings.Contains(opts.ReleaseImage, "/") || strings.Contains(opts.ReleaseImage, "@") {
+		return nil
+	}
+	obj, err := m.client.Get(ctx, client.GVRClusterImageSet, "", opts.ReleaseImage)
+	if err != nil {
+		return fmt.Errorf("resolving ClusterImageSet %s: %w", opts.ReleaseImage, err)
+	}
+	image, _, _ := unstructured.NestedString(obj.Object, "spec", "releaseImage")
+	if image == "" {
+		return fmt.Errorf("ClusterImageSet %s has no spec.releaseImage", opts.ReleaseImage)
+	}
+	m.logger.Info("provisioning.resolveHyperShiftReleaseImage", "imageSet", opts.ReleaseImage, "releaseImage", image)
+	opts.ReleaseImage = image
+	return nil
 }

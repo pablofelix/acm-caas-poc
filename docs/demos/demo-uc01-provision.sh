@@ -22,16 +22,20 @@ case "$PHASE" in
   launch)
     echo "--- Phase 1: Launch ---"
 
-    echo "Step 1: List available ClusterImageSets"
+    echo "Step 1: Preflight checks"
+    acmlab provision preflight "$CLUSTER_NAME" \
+      --pull-secret "$PULL_SECRET"
+
+    echo "Step 2: List available ClusterImageSets"
     acmlab provision image-sets
 
-    echo "Step 2: Provision the cluster"
+    echo "Step 3: Provision the cluster"
     acmlab provision create "$CLUSTER_NAME" \
       --pull-secret "$PULL_SECRET" \
       --region "$REGION" \
       --workers 2
 
-    echo "Step 3: Initial status"
+    echo "Step 4: Initial status"
     acmlab provision status "$CLUSTER_NAME"
 
     echo ""

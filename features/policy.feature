@@ -28,6 +28,14 @@ Feature: Governance policy management
     When I set remediation of "test-registry-policy" to "enforce"
     Then the policy remediation is "enforce"
 
+  @slow
+  Scenario: Enforce reconciliation after manual drift
+    Given policy "test-registry-policy" exists
+    And I set remediation of "test-registry-policy" to "enforce"
+    And the cluster "infraops1" eventually becomes Compliant for "test-registry-policy"
+    When I manually remove the allowedRegistries config from "infraops1"
+    Then ACM re-enforces and the allowedRegistries config is restored on "infraops1"
+
   Scenario: Remove a policy and its bindings
     Given policy "test-registry-policy" exists
     When I remove policy "test-registry-policy"

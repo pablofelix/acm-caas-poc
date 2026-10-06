@@ -21,7 +21,10 @@ func buildNamespace(name string) *unstructured.Unstructured {
 	}
 }
 
-func buildCredentialsSecret(namespace, apiKey string) *unstructured.Unstructured {
+func buildCredentialsSecret(namespace string, opts ClusterOpts) *unstructured.Unstructured {
+	if opts.Platform == "aws" {
+		return buildAWSCredentialsSecret(namespace, opts.AWSAccessKeyID, opts.AWSSecretAccessKey)
+	}
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -32,7 +35,25 @@ func buildCredentialsSecret(namespace, apiKey string) *unstructured.Unstructured
 			},
 			"type": "Opaque",
 			"data": map[string]interface{}{
-				"ibmcloud_api_key": base64.StdEncoding.EncodeToString([]byte(apiKey)),
+				"ibmcloud_api_key": base64.StdEncoding.EncodeToString([]byte(opts.IBMCloudAPIKey)),
+			},
+		},
+	}
+}
+
+func buildAWSCredentialsSecret(namespace, accessKeyID, secretAccessKey string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]interface{}{
+				"name":      namespace + "-aws-creds",
+				"namespace": namespace,
+			},
+			"type": "Opaque",
+			"data": map[string]interface{}{
+				"aws_access_key_id":     base64.StdEncoding.EncodeToString([]byte(accessKeyID)),
+				"aws_secret_access_key": base64.StdEncoding.EncodeToString([]byte(secretAccessKey)),
 			},
 		},
 	}
@@ -136,9 +157,14 @@ func buildClusterDeployment(opts ClusterOpts) *unstructured.Unstructured {
 	platformSpec := map[string]interface{}{
 		"region": opts.Region,
 	}
-	if opts.Platform == "ibmcloud" {
+	switch opts.Platform {
+	case "ibmcloud":
 		platformSpec["credentialsSecretRef"] = map[string]interface{}{
 			"name": opts.Name + "-ibmcloud-creds",
+		}
+	case "aws":
+		platformSpec["credentialsSecretRef"] = map[string]interface{}{
+			"name": opts.Name + "-aws-creds",
 		}
 	}
 
@@ -154,8 +180,9 @@ func buildClusterDeployment(opts ClusterOpts) *unstructured.Unstructured {
 				},
 			},
 			"spec": map[string]interface{}{
-				"clusterName": opts.Name,
-				"baseDomain":  opts.BaseDomain,
+				"clusterName":        opts.Name,
+				"baseDomain":         opts.BaseDomain,
+				"installAttemptsLimit": int64(3),
 				"platform": map[string]interface{}{
 					opts.Platform: platformSpec,
 				},

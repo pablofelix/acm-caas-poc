@@ -84,8 +84,10 @@ func buildVMManifestWork(cluster, name string, opts VMOpts) *unstructured.Unstru
 				"name":      mwName(name, cluster),
 				"namespace": cluster,
 				"labels": map[string]interface{}{
-					LabelVM:                    "true",
-					LabelVMName:               name,
+					LabelVM:     "true",
+					LabelVMName: name,
+				},
+				"annotations": map[string]interface{}{
 					"acmlab.redhat.com/vm-image": opts.Image,
 					"acmlab.redhat.com/vm-disk":  opts.DiskSize,
 				},
@@ -93,6 +95,183 @@ func buildVMManifestWork(cluster, name string, opts VMOpts) *unstructured.Unstru
 			"spec": map[string]interface{}{
 				"workload": map[string]interface{}{
 					"manifests": []interface{}{vm},
+				},
+			},
+		},
+	}
+}
+
+func buildCNVPolicy(cluster string) *unstructured.Unstructured {
+	name := cnvPolicyName(cluster)
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "policy.open-cluster-management.io/v1",
+			"kind":       "Policy",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": PolicyNamespace,
+				"labels": map[string]interface{}{
+					"acmlab.redhat.com/managed": "true",
+					"acmlab.redhat.com/cnv":     "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"disabled":          false,
+				"remediationAction": "enforce",
+				"policy-templates": []interface{}{
+					map[string]interface{}{
+						"objectDefinition": map[string]interface{}{
+							"apiVersion": "policy.open-cluster-management.io/v1",
+							"kind":       "ConfigurationPolicy",
+							"metadata": map[string]interface{}{
+								"name": name + "-prereqs",
+							},
+							"spec": map[string]interface{}{
+								"remediationAction":   "enforce",
+								"severity":            "high",
+								"pruneObjectBehavior": "DeleteIfCreated",
+								"object-templates": []interface{}{
+									map[string]interface{}{
+										"complianceType": "musthave",
+										"objectDefinition": map[string]interface{}{
+											"apiVersion": "v1",
+											"kind":       "Namespace",
+											"metadata": map[string]interface{}{
+												"name": CNVNamespace,
+											},
+										},
+									},
+									map[string]interface{}{
+										"complianceType": "musthave",
+										"objectDefinition": map[string]interface{}{
+											"apiVersion": "operators.coreos.com/v1",
+											"kind":       "OperatorGroup",
+											"metadata": map[string]interface{}{
+												"name":      CNVOperatorName + "-group",
+												"namespace": CNVNamespace,
+											},
+											"spec": map[string]interface{}{
+												"targetNamespaces": []interface{}{CNVNamespace},
+											},
+										},
+									},
+									map[string]interface{}{
+										"complianceType": "musthave",
+										"objectDefinition": map[string]interface{}{
+											"apiVersion": "operators.coreos.com/v1alpha1",
+											"kind":       "Subscription",
+											"metadata": map[string]interface{}{
+												"name":      CNVOperatorName,
+												"namespace": CNVNamespace,
+											},
+											"spec": map[string]interface{}{
+												"channel":             CNVOperatorChannel,
+												"name":                CNVOperatorName,
+												"source":              "redhat-operators",
+												"sourceNamespace":     "openshift-marketplace",
+												"installPlanApproval": "Automatic",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"objectDefinition": map[string]interface{}{
+							"apiVersion": "policy.open-cluster-management.io/v1",
+							"kind":       "ConfigurationPolicy",
+							"metadata": map[string]interface{}{
+								"name": name + "-hyperconverged",
+							},
+							"spec": map[string]interface{}{
+								"remediationAction":   "enforce",
+								"severity":            "high",
+								"pruneObjectBehavior": "DeleteIfCreated",
+								"object-templates": []interface{}{
+									map[string]interface{}{
+										"complianceType": "musthave",
+										"objectDefinition": map[string]interface{}{
+											"apiVersion": "hco.kubevirt.io/v1beta1",
+											"kind":       "HyperConverged",
+											"metadata": map[string]interface{}{
+												"name":      CNVOperatorName,
+												"namespace": CNVNamespace,
+											},
+											"spec": map[string]interface{}{},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func buildCNVPlacement(cluster string) *unstructured.Unstructured {
+	name := cnvPolicyName(cluster)
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "cluster.open-cluster-management.io/v1beta1",
+			"kind":       "Placement",
+			"metadata": map[string]interface{}{
+				"name":      name + "-placement",
+				"namespace": PolicyNamespace,
+			},
+			"spec": map[string]interface{}{
+				"predicates": []interface{}{
+					map[string]interface{}{
+						"requiredClusterSelector": map[string]interface{}{
+							"labelSelector": map[string]interface{}{
+								"matchExpressions": []interface{}{
+									map[string]interface{}{
+										"key":      "name",
+										"operator": "In",
+										"values":   []interface{}{cluster},
+									},
+								},
+							},
+						},
+					},
+				},
+				"tolerations": []interface{}{
+					map[string]interface{}{
+						"key":      "cluster.open-cluster-management.io/unreachable",
+						"operator": "Exists",
+					},
+					map[string]interface{}{
+						"key":      "cluster.open-cluster-management.io/unavailable",
+						"operator": "Exists",
+					},
+				},
+			},
+		},
+	}
+}
+
+func buildCNVPlacementBinding(cluster string) *unstructured.Unstructured {
+	name := cnvPolicyName(cluster)
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "policy.open-cluster-management.io/v1",
+			"kind":       "PlacementBinding",
+			"metadata": map[string]interface{}{
+				"name":      name + "-placement-binding",
+				"namespace": PolicyNamespace,
+			},
+			"placementRef": map[string]interface{}{
+				"apiGroup": "cluster.open-cluster-management.io",
+				"kind":     "Placement",
+				"name":     name + "-placement",
+			},
+			"subjects": []interface{}{
+				map[string]interface{}{
+					"apiGroup": "policy.open-cluster-management.io",
+					"kind":     "Policy",
+					"name":     name,
 				},
 			},
 		},

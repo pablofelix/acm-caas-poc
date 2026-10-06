@@ -14,6 +14,8 @@ type Config struct {
 	Platform       string
 	IBMCloudAPIKey string
 	IBMCloudRegion string
+	AWSRegion     string
+	AWSBaseDomain string
 
 	BaseDomain          string
 	ClusterImageSet     string
@@ -26,6 +28,10 @@ type Config struct {
 	OperationTimeout time.Duration
 
 	MCPLogLevel string
+
+	ClusterSpoke1 string
+	ClusterSpoke2 string
+	ClusterHub    string
 }
 
 func LoadFromEnv() (Config, error) {
@@ -35,11 +41,16 @@ func LoadFromEnv() (Config, error) {
 		Platform:       envOr("ACM_PLATFORM", "ibmcloud"),
 		IBMCloudAPIKey: envOr("IBMCLOUD_API_KEY", ""),
 		IBMCloudRegion: envOr("IBMCLOUD_REGION", "us-south"),
+		AWSRegion:      envOr("AWS_REGION", "us-east-1"),
+		AWSBaseDomain:  envOr("ACM_AWS_BASE_DOMAIN", ""),
 		BaseDomain:     envOr("ACM_BASE_DOMAIN", ""),
 		ClusterImageSet: envOr("ACM_CLUSTER_IMAGE_SET", "img4.22.9-multi-appsub"),
 		DefaultWorkerType: envOr("ACM_DEFAULT_WORKER_TYPE", "bx2-4x16"),
 		DefaultMasterType: envOr("ACM_DEFAULT_MASTER_TYPE", "bx2-8x32"),
 		MCPLogLevel:       envOr("ACM_MCP_LOG_LEVEL", "info"),
+		ClusterSpoke1:     envOr("ACM_CLUSTER_SPOKE1", "spoke1"),
+		ClusterSpoke2:     envOr("ACM_CLUSTER_SPOKE2", "spoke2"),
+		ClusterHub:        envOr("ACM_CLUSTER_HUB", "infraops1"),
 	}
 
 	var err error
@@ -61,6 +72,19 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func (c Config) ResolveCluster(name string) string {
+	switch name {
+	case "spoke1":
+		return c.ClusterSpoke1
+	case "spoke2":
+		return c.ClusterSpoke2
+	case "infraops1":
+		return c.ClusterHub
+	default:
+		return name
+	}
 }
 
 func envOr(key, fallback string) string {

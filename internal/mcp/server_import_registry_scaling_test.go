@@ -150,6 +150,8 @@ func TestSplitTrimOnlyCommas(t *testing.T) {
 // --- Provisioning tools ---
 
 func TestProvisionCreateViaMCP(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret-access-key")
 	c := fakeClientWithClusters()
 	resp := callTool(t, c, "acm_provision_create", map[string]interface{}{
 		"name":        "test-cluster",

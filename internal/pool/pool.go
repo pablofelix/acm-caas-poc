@@ -10,16 +10,24 @@ import (
 
 	"github.com/pablofelix/acm-caas-poc/internal/client"
 	"github.com/pablofelix/acm-caas-poc/internal/config"
+	"github.com/pablofelix/acm-caas-poc/internal/lifecycle"
+	"github.com/pablofelix/acm-caas-poc/internal/provisioning"
 )
 
 type PoolOpts struct {
-	Name       string
-	Namespace  string
-	Size       int
-	Platform   string
-	Region     string
-	ImageSet   string
-	BaseDomain string
+	Name               string
+	Namespace          string
+	Size               int
+	Platform           string
+	Region             string
+	ImageSet           string
+	BaseDomain         string
+	PullSecret         string
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	IBMCloudAPIKey     string
+	WorkerType         string
+	MasterType         string
 }
 
 type PoolInfo struct {
@@ -40,13 +48,25 @@ type ClaimInfo struct {
 }
 
 type Manager struct {
-	client *client.Client
-	cfg    config.Config
-	logger *slog.Logger
+	client       *client.Client
+	cfg          config.Config
+	logger       *slog.Logger
+	provisioning *provisioning.Manager
+	lifecycle    *lifecycle.Manager
 }
 
 func New(c *client.Client, cfg config.Config, logger *slog.Logger) *Manager {
 	return &Manager{client: c, cfg: cfg, logger: logger}
+}
+
+func NewWithManagers(c *client.Client, cfg config.Config, logger *slog.Logger, provMgr *provisioning.Manager, lcMgr *lifecycle.Manager) *Manager {
+	return &Manager{
+		client:       c,
+		cfg:          cfg,
+		logger:       logger,
+		provisioning: provMgr,
+		lifecycle:    lcMgr,
+	}
 }
 
 func (m *Manager) CreatePool(ctx context.Context, opts PoolOpts) error {
@@ -61,6 +81,27 @@ func (m *Manager) CreatePool(ctx context.Context, opts PoolOpts) error {
 	ns := buildNamespace(opts.Namespace)
 	if err := m.client.CreateIfNotExists(ctx, client.GVRNamespace, "", ns); err != nil {
 		return fmt.Errorf("ensuring namespace %s: %w", opts.Namespace, err)
+	}
+
+	if opts.PullSecret != "" {
+		ps := buildPullSecret(opts.Namespace, opts.PullSecret)
+		if err := m.client.CreateIfNotExists(ctx, client.GVRSecret, opts.Namespace, ps); err != nil {
+			return fmt.Errorf("creating pull secret: %w", err)
+		}
+	}
+
+	if opts.Platform == "aws" && opts.AWSAccessKeyID != "" {
+		creds := buildAWSCredentialsSecret(opts.Namespace, opts.AWSAccessKeyID, opts.AWSSecretAccessKey)
+		if err := m.client.CreateIfNotExists(ctx, client.GVRSecret, opts.Namespace, creds); err != nil {
+			return fmt.Errorf("creating AWS credentials: %w", err)
+		}
+	}
+
+	if opts.Platform == "ibmcloud" && opts.IBMCloudAPIKey != "" {
+		creds := buildIBMCredentialsSecret(opts.Namespace, opts.IBMCloudAPIKey)
+		if err := m.client.CreateIfNotExists(ctx, client.GVRSecret, opts.Namespace, creds); err != nil {
+			return fmt.Errorf("creating IBM credentials: %w", err)
+		}
 	}
 
 	obj := buildClusterPool(opts)
@@ -243,9 +284,32 @@ func buildClusterPool(opts PoolOpts) *unstructured.Unstructured {
 		baseDomain = "example.com"
 	}
 
-	platformSpec := map[string]interface{}{
-		platform: map[string]interface{}{
-			"region": region,
+	platformBlock := map[string]interface{}{
+		"region": region,
+	}
+	credsSecretName := opts.Namespace + "-aws-creds"
+	if platform == "ibmcloud" {
+		credsSecretName = opts.Namespace + "-ibmcloud-creds"
+	}
+	platformBlock["credentialsSecretRef"] = map[string]interface{}{
+		"name": credsSecretName,
+	}
+
+	spec := map[string]interface{}{
+		"size":       int64(opts.Size),
+		"baseDomain": baseDomain,
+		"imageSetRef": map[string]interface{}{
+			"name": opts.ImageSet,
+		},
+		"platform": map[string]interface{}{
+			platform: platformBlock,
+		},
+		"installAttemptsLimit": int64(6),
+		"hibernationConfig": map[string]interface{}{
+			"resumeTimeout": "20m",
+		},
+		"pullSecretRef": map[string]interface{}{
+			"name": opts.Namespace + "-pull-secret",
 		},
 	}
 
@@ -260,16 +324,58 @@ func buildClusterPool(opts PoolOpts) *unstructured.Unstructured {
 					"acmlab.redhat.com/managed": "true",
 				},
 			},
-			"spec": map[string]interface{}{
-				"size":       int64(opts.Size),
-				"baseDomain": baseDomain,
-				"imageSetRef": map[string]interface{}{
-					"name": opts.ImageSet,
-				},
-				"platform": platformSpec,
-				"hibernationConfig": map[string]interface{}{
-					"resumeTimeout": "20m",
-				},
+			"spec": spec,
+		},
+	}
+}
+
+func buildPullSecret(namespace, pullSecret string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]interface{}{
+				"name":      namespace + "-pull-secret",
+				"namespace": namespace,
+			},
+			"type": "kubernetes.io/dockerconfigjson",
+			"stringData": map[string]interface{}{
+				".dockerconfigjson": pullSecret,
+			},
+		},
+	}
+}
+
+func buildAWSCredentialsSecret(namespace, accessKeyID, secretAccessKey string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]interface{}{
+				"name":      namespace + "-aws-creds",
+				"namespace": namespace,
+			},
+			"type": "Opaque",
+			"stringData": map[string]interface{}{
+				"aws_access_key_id":     accessKeyID,
+				"aws_secret_access_key": secretAccessKey,
+			},
+		},
+	}
+}
+
+func buildIBMCredentialsSecret(namespace, apiKey string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]interface{}{
+				"name":      namespace + "-ibmcloud-creds",
+				"namespace": namespace,
+			},
+			"type": "Opaque",
+			"stringData": map[string]interface{}{
+				"ibmcloud_api_key": apiKey,
 			},
 		},
 	}

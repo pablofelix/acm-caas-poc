@@ -28,6 +28,7 @@ func (s *suiteContext) iListManagedClusterResources(ctx context.Context) error {
 }
 
 func (s *suiteContext) eachClusterHasNameAndConditions() error {
+	fmt.Printf("\n  ┌─ ManagedClusters: %d\n", len(s.clusters))
 	for _, c := range s.clusters {
 		if c.Name == "" {
 			return fmt.Errorf("found cluster with empty name")
@@ -35,7 +36,13 @@ func (s *suiteContext) eachClusterHasNameAndConditions() error {
 		if len(c.Conditions) == 0 {
 			return fmt.Errorf("cluster %s has no conditions", c.Name)
 		}
+		avail := "No"
+		if c.Available {
+			avail = "Yes"
+		}
+		fmt.Printf("  │  %-20s available=%-5s joined=%-5v conditions=%d\n", c.Name, avail, c.Joined, len(c.Conditions))
 	}
+	fmt.Printf("  └─\n")
 	return nil
 }
 
@@ -49,6 +56,7 @@ func (s *suiteContext) availableClustersReportTrue() error {
 }
 
 func (s *suiteContext) aManagedClusterExists(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	cluster, err := s.fleet.GetCluster(ctx, name)
 	if err != nil {
 		return fmt.Errorf("ManagedCluster %s does not exist: %w", name, err)
@@ -58,6 +66,7 @@ func (s *suiteContext) aManagedClusterExists(ctx context.Context, name string) e
 }
 
 func (s *suiteContext) iGetManagedCluster(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	cluster, err := s.fleet.GetCluster(ctx, name)
 	if err != nil {
 		return err
@@ -76,5 +85,15 @@ func (s *suiteContext) clusterInfoIncludesDetails() error {
 	if len(s.cluster.Conditions) == 0 {
 		return fmt.Errorf("cluster has no conditions")
 	}
+	fmt.Printf("\n  ┌─ Cluster: %s\n", s.cluster.Name)
+	fmt.Printf("  │  Available: %v, Joined: %v, Version: %s\n", s.cluster.Available, s.cluster.Joined, s.cluster.Version)
+	if len(s.cluster.Labels) > 0 {
+		fmt.Printf("  │  Labels: %d entries\n", len(s.cluster.Labels))
+	}
+	fmt.Printf("  │  Conditions: %d\n", len(s.cluster.Conditions))
+	for _, cond := range s.cluster.Conditions {
+		fmt.Printf("  │    %-40s = %s\n", cond.Type, cond.Status)
+	}
+	fmt.Printf("  └─\n")
 	return nil
 }

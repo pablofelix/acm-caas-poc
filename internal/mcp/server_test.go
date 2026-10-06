@@ -94,8 +94,12 @@ func newManagedCluster(name string, available bool) *unstructured.Unstructured {
 }
 
 func callTool(t *testing.T, c *client.Client, toolName string, args map[string]interface{}) mcplib.JSONRPCMessage {
+	return callToolWithConfig(t, c, config.Config{}, toolName, args)
+}
+
+func callToolWithConfig(t *testing.T, c *client.Client, cfg config.Config, toolName string, args map[string]interface{}) mcplib.JSONRPCMessage {
 	t.Helper()
-	s := NewServer(c, config.Config{}, discardLogger)
+	s := NewServer(c, cfg, discardLogger)
 
 	params := map[string]interface{}{
 		"name": toolName,

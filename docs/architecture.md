@@ -105,7 +105,7 @@ methods. Uses `github.com/mark3labs/mcp-go` for the stdio transport.
 
 | UC | Name | Package | Status |
 |----|------|---------|--------|
-| 01 | Cluster provisioning (multi-platform) | `provisioning` | Done |
+| 01 | Cluster provisioning (multi-platform) + preflight | `provisioning` | Done |
 | 02 | Governance policy management | `policy` | Done |
 | 03 | Tenant RBAC isolation | `tenant` | Done |
 | 04 | Fleet status and cross-cluster search | `fleet` | Done |
@@ -118,6 +118,10 @@ methods. Uses `github.com/mark3labs/mcp-go` for the stdio transport.
 | 10 | Cluster scaling (workers) | `scaling` | Done |
 | 11 | Cost tracking and chargeback | — | Planned |
 | 13 | Registry mirror (ROKS, air-gapped) | `registry` | Done |
+| 25 | ClusterPool pre-warmed clusters | `pool` | In Progress |
+| 38 | HyperShift hosted control planes | `provisioning` | In Progress |
+| 40 | CAPI cluster provisioning | `provisioning` | In Progress |
+| 51 | VM lifecycle via KubeVirt | `virtualization` | Done |
 
 ## Data Flow
 

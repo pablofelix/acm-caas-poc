@@ -27,6 +27,7 @@ func registerScalingSteps(sc *godog.ScenarioContext, s *suiteContext) {
 }
 
 func (s *suiteContext) hiveClusterHasMachinePool(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	mp, err := s.scaling.GetMachinePool(ctx, name)
 	if err != nil {
 		return fmt.Errorf("no MachinePool for %s: %w", name, err)
@@ -36,6 +37,7 @@ func (s *suiteContext) hiveClusterHasMachinePool(ctx context.Context, name strin
 }
 
 func (s *suiteContext) iGetMachinePool(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	mp, err := s.scaling.GetMachinePool(ctx, name)
 	if err != nil {
 		return err
@@ -52,10 +54,12 @@ func (s *suiteContext) receiveReplicaAndPlatform() error {
 }
 
 func (s *suiteContext) iSetMachinePoolReplicas(ctx context.Context, replicas int, name string) error {
+	name = s.resolveCluster(name)
 	return s.scaling.SetReplicas(ctx, name, replicas)
 }
 
 func (s *suiteContext) machinePoolHasReplicas(ctx context.Context, name string, replicas int) error {
+	name = s.resolveCluster(name)
 	mp, err := s.scaling.GetMachinePool(ctx, name)
 	if err != nil {
 		return err
@@ -67,10 +71,12 @@ func (s *suiteContext) machinePoolHasReplicas(ctx context.Context, name string, 
 }
 
 func (s *suiteContext) iEnableAutoscaling(ctx context.Context, min, max int, name string) error {
+	name = s.resolveCluster(name)
 	return s.scaling.EnableAutoscaling(ctx, name, min, max)
 }
 
 func (s *suiteContext) machinePoolHasAutoscaling(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	mp, err := s.scaling.GetMachinePool(ctx, name)
 	if err != nil {
 		return err
@@ -98,6 +104,7 @@ func (s *suiteContext) receiveMachinePoolInfo() error {
 }
 
 func (s *suiteContext) clusterImportedWithoutHive(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	supported, _ := s.scaling.ClusterSupportsScaling(ctx, name)
 	if supported {
 		return fmt.Errorf("cluster %s has a ClusterDeployment — expected imported", name)
@@ -106,6 +113,7 @@ func (s *suiteContext) clusterImportedWithoutHive(ctx context.Context, name stri
 }
 
 func (s *suiteContext) iTryGetMachinePool(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, s.err = s.scaling.GetMachinePool(ctx, name)
 	return nil
 }

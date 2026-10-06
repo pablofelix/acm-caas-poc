@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,8 @@ func provisionCmd() *cobra.Command {
 		Short: "Provision and manage spoke clusters (Hive, HyperShift, CAPI)",
 	}
 	cmd.AddCommand(
+		provisionPreflightCmd(),
+		provisionOrphanCheckCmd(),
 		provisionCreateCmd(),
 		provisionDestroyCmd(),
 		provisionStatusCmd(),
@@ -26,6 +29,8 @@ func provisionCmd() *cobra.Command {
 		provisionImageSetsCmd(),
 		provisionListCAPICmd(),
 		provisionListHostedCmd(),
+		provisionSetupCAPICmd(),
+		provisionCAPIStatusCmd(),
 		provisionTemplateCreateCmd(),
 		provisionTemplateGetCmd(),
 		provisionTemplateListCmd(),
@@ -35,9 +40,117 @@ func provisionCmd() *cobra.Command {
 	return cmd
 }
 
+func provisionPreflightCmd() *cobra.Command {
+	var platform, region, pullSecretFile string
+	cmd := &cobra.Command{
+		Use:   "preflight <cluster-name>",
+		Short: "Run preflight checks before provisioning (credentials, quota, image sets)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+
+			opts := provisioning.ClusterOpts{
+				Name:     args[0],
+				Platform: platform,
+				Region:   region,
+			}
+
+			if pullSecretFile != "" {
+				data, err := os.ReadFile(pullSecretFile)
+				if err != nil {
+					return fmt.Errorf("reading pull secret: %w", err)
+				}
+				opts.PullSecret = string(data)
+			}
+
+			if opts.Platform == "aws" || (opts.Platform == "" && cfg.Platform == "aws") {
+				awsCreds, err := provisioning.LoadAWSCredentials("")
+				if err != nil {
+					return fmt.Errorf("loading AWS credentials: %w", err)
+				}
+				opts.AWSAccessKeyID = awsCreds.AccessKeyID
+				opts.AWSSecretAccessKey = awsCreds.SecretAccessKey
+			}
+
+			results, err := mgr.Preflight(context.Background(), opts)
+			if err != nil {
+				return fmt.Errorf("preflight: %w", err)
+			}
+			fmt.Print(provisioning.FormatPreflightResults(results))
+			if !provisioning.PreflightPassed(results) {
+				return fmt.Errorf("preflight checks failed")
+			}
+			fmt.Println("All preflight checks passed — safe to provision.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&platform, "platform", "", "Cloud platform: ibmcloud, aws")
+	cmd.Flags().StringVar(&region, "region", "", "Cloud region")
+	cmd.Flags().StringVar(&pullSecretFile, "pull-secret", "", "Path to pull secret file")
+	return cmd
+}
+
+func provisionOrphanCheckCmd() *cobra.Command {
+	var infraID, platform, region string
+	cmd := &cobra.Command{
+		Use:   "orphan-check [cluster-name]",
+		Short: "Check for orphaned cloud resources from a cluster's infrastructure",
+		Long: `Queries the cloud provider for resources matching the cluster's infraID.
+Use after destroy to verify all resources were cleaned up, or proactively to find leaked resources.
+
+When the ClusterDeployment still exists, pass its name as the argument.
+After the cluster has been destroyed, use --infra-id, --platform, and --region instead:
+
+  acmlab provision orphan-check --infra-id <infra-id> --platform aws --region us-east-1`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+			ctx := context.Background()
+
+			if infraID != "" || platform != "" || region != "" {
+				if infraID == "" || platform == "" || region == "" {
+					return fmt.Errorf("--infra-id, --platform, and --region must all be provided together")
+				}
+			} else {
+				if len(args) == 0 {
+					return fmt.Errorf("provide a cluster name or use --infra-id, --platform, and --region")
+				}
+				var captureErr error
+				infraID, platform, region, captureErr = mgr.CaptureInfraID(ctx, args[0])
+				if captureErr != nil {
+					return fmt.Errorf("reading cluster metadata: %w", captureErr)
+				}
+			}
+
+			result, err := mgr.CheckOrphans(ctx, infraID, platform, region)
+			if err != nil {
+				return fmt.Errorf("orphan check: %w", err)
+			}
+
+			fmt.Print(provisioning.FormatOrphanCheckResult(result))
+			if !result.Clean {
+				return fmt.Errorf("%d orphaned resources found", len(result.Orphans))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&infraID, "infra-id", "", "Infrastructure ID (use after cluster is destroyed)")
+	cmd.Flags().StringVar(&platform, "platform", "", "Cloud platform: ibmcloud, aws (required with --infra-id)")
+	cmd.Flags().StringVar(&region, "region", "", "Cloud region (required with --infra-id)")
+	return cmd
+}
+
 func provisionCreateCmd() *cobra.Command {
 	var platform, region, baseDomain, imageSet, workerType, masterType, sshKeyFile, sshPrivateKeyFile, pullSecretFile, manifestsDir string
-	var clusterType, kubernetesVersion, infraProvider, releaseImage string
+	var clusterType, kubernetesVersion, infraProvider, releaseImage, sshKeyName string
 	var workers, masters int64
 	cmd := &cobra.Command{
 		Use:   "create <cluster-name>",
@@ -81,6 +194,8 @@ func provisionCreateCmd() *cobra.Command {
 					InfraProvider:     infraProvider,
 					KubernetesVersion: kubernetesVersion,
 					WorkerReplicas:    workers,
+					Region:            region,
+					SSHKeyName:        sshKeyName,
 				}
 				if pullSecretFile != "" {
 					data, err := os.ReadFile(pullSecretFile)
@@ -89,12 +204,15 @@ func provisionCreateCmd() *cobra.Command {
 					}
 					opts.PullSecret = string(data)
 				}
-				fmt.Printf("Creating CAPI cluster %s (provider: %s)...\n", args[0], opts.InfraProvider)
+				if opts.InfraProvider == "" && cfg.Platform == "aws" {
+					opts.InfraProvider = "aws"
+				}
+				fmt.Printf("Creating CAPI cluster %s (provider: %s, region: %s)...\n", args[0], opts.InfraProvider, opts.Region)
 				if err := mgr.CreateCAPI(context.Background(), opts); err != nil {
 					return err
 				}
-				fmt.Println("CAPI Cluster and MachineDeployment created.")
-				fmt.Println("Use 'acmlab provision status' to monitor progress.")
+				fmt.Println("CAPI Cluster created with all infrastructure resources.")
+				fmt.Println("Use 'acmlab provision status-capi' to monitor progress.")
 				return nil
 			}
 
@@ -135,6 +253,25 @@ func provisionCreateCmd() *cobra.Command {
 				opts.SSHPrivateKey = string(data)
 			}
 
+			if opts.Platform == "aws" || (opts.Platform == "" && cfg.Platform == "aws") {
+				awsCreds, err := provisioning.LoadAWSCredentials("")
+				if err != nil {
+					return fmt.Errorf("loading AWS credentials: %w", err)
+				}
+				opts.AWSAccessKeyID = awsCreds.AccessKeyID
+				opts.AWSSecretAccessKey = awsCreds.SecretAccessKey
+			}
+
+			fmt.Println("Running preflight checks...")
+			results, err := mgr.Preflight(context.Background(), opts)
+			if err != nil {
+				return fmt.Errorf("preflight: %w", err)
+			}
+			fmt.Print(provisioning.FormatPreflightResults(results))
+			if !provisioning.PreflightPassed(results) {
+				return fmt.Errorf("preflight checks failed — fix the issues above before provisioning")
+			}
+
 			fmt.Printf("Creating cluster %s in %s...\n", args[0], opts.Region)
 			if err := mgr.Create(context.Background(), opts); err != nil {
 				return err
@@ -146,8 +283,9 @@ func provisionCreateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&clusterType, "type", "", "provisioning type: hive (default), hypershift, capi")
 	cmd.Flags().StringVar(&releaseImage, "release-image", "", "OCP release image for HyperShift clusters")
-	cmd.Flags().StringVar(&kubernetesVersion, "kubernetes-version", "", "Kubernetes version for CAPI clusters (default: v1.30.0)")
-	cmd.Flags().StringVar(&infraProvider, "infra-provider", "", "CAPI infrastructure provider: docker, aws, azure, gcp (default: docker)")
+	cmd.Flags().StringVar(&kubernetesVersion, "kubernetes-version", "", "Kubernetes version for CAPI clusters (default: v1.34.8)")
+	cmd.Flags().StringVar(&infraProvider, "infra-provider", "", "CAPI infrastructure provider: aws, docker, azure, gcp (default: aws on AWS platform)")
+	cmd.Flags().StringVar(&sshKeyName, "ssh-key-name", "", "AWS SSH key pair name for CAPI clusters")
 	cmd.Flags().StringVar(&platform, "platform", "", "cloud platform: ibmcloud, aws, gcp, azure (default: from env)")
 	cmd.Flags().StringVar(&baseDomain, "base-domain", "", "base DNS domain for the cluster (default: from ACM_BASE_DOMAIN env)")
 	cmd.Flags().StringVar(&region, "region", "", "cloud region (default: from env)")
@@ -167,11 +305,15 @@ func provisionDestroyCmd() *cobra.Command {
 	var fromFile string
 	var concurrency int
 	var outputJSON bool
+	var checkOrphans bool
 
 	cmd := &cobra.Command{
 		Use:   "destroy [name...]",
 		Short: "Destroy one or more provisioned clusters",
-		Args:  cobra.MinimumNArgs(0),
+		Long: `Destroy one or more provisioned clusters.
+With --check-orphans (single cluster only), captures the infraID before destroying,
+waits for the ClusterDeployment to be fully removed, then checks for orphaned cloud resources.`,
+		Args: cobra.MinimumNArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var fileItems []batch.ClusterItem
 			if fromFile != "" {
@@ -192,6 +334,21 @@ func provisionDestroyCmd() *cobra.Command {
 			}
 			mgr := provisioning.New(c, cfg, logger)
 			ctx := context.Background()
+
+			if checkOrphans {
+				if len(items) != 1 {
+					return fmt.Errorf("--check-orphans requires exactly one cluster name")
+				}
+				result, err := mgr.DestroyWithOrphanCheck(ctx, items[0].Name)
+				if err != nil {
+					return err
+				}
+				fmt.Print(provisioning.FormatOrphanCheckResult(result))
+				if !result.Clean {
+					return fmt.Errorf("%d orphaned resources found", len(result.Orphans))
+				}
+				return nil
+			}
 
 			work := make([]batch.Work, len(items))
 			for i, item := range items {
@@ -225,6 +382,7 @@ func provisionDestroyCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fromFile, "from-file", "", "YAML file with cluster list")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 5, "Max parallel operations (max 20)")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output results as JSON array")
+	cmd.Flags().BoolVar(&checkOrphans, "check-orphans", false, "Capture infraID, destroy, wait, then check for orphaned resources (single cluster only)")
 	return cmd
 }
 
@@ -412,6 +570,86 @@ func provisionListHostedCmd() *cobra.Command {
 			for _, c := range clusters {
 				fmt.Printf("%-20s %-15s %-10v %s\n", c.Name, c.Namespace, c.Available, c.Version)
 			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func provisionSetupCAPICmd() *cobra.Command {
+	var infraProviders, region, sshKeyName string
+	var waitTimeout int
+	cmd := &cobra.Command{
+		Use:   "setup-capi",
+		Short: "Install CAPI controllers, grant SCCs, upgrade CRDs, and create SSH keys on the hub",
+		Long: `Sets up the hub cluster for CAPI provisioning:
+- Installs CAPI core, kubeadm bootstrap, kubeadm control plane, and infrastructure controllers via clusterctl
+- Upgrades CRDs to support v1beta2 API (required for newer infrastructure providers)
+- Grants privileged SCC to CAPI service accounts (required on OpenShift)
+- Optionally creates an AWS SSH key pair for CAPI clusters`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+
+			providers := strings.Split(infraProviders, ",")
+
+			opts := provisioning.CAPISetupOpts{
+				InfraProviders: providers,
+				Region:         region,
+				SSHKeyName:     sshKeyName,
+			}
+			if waitTimeout > 0 {
+				opts.WaitTimeout = time.Duration(waitTimeout) * time.Second
+			}
+
+			fmt.Println("Setting up CAPI controllers on hub...")
+			result, err := mgr.SetupCAPIControllers(context.Background(), opts)
+			if err != nil {
+				fmt.Println(result.Summary())
+				return err
+			}
+
+			fmt.Println(result.Summary())
+			if len(result.Errors) > 0 {
+				return fmt.Errorf("setup completed with %d errors", len(result.Errors))
+			}
+			fmt.Println("\nCAPI setup complete. You can now provision clusters with:")
+			fmt.Println("  acmlab provision create <name> --type capi --infra-provider aws --region us-east-1")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&infraProviders, "infra-providers", "aws", "Comma-separated infrastructure providers to install (aws, ibmcloud, azure, gcp)")
+	cmd.Flags().StringVar(&region, "region", "", "AWS region for SSH key creation (default: from config)")
+	cmd.Flags().StringVar(&sshKeyName, "ssh-key-name", "", "AWS SSH key pair name to create (optional)")
+	cmd.Flags().IntVar(&waitTimeout, "wait-timeout", 300, "Timeout in seconds for pods to become ready")
+	return cmd
+}
+
+func provisionCAPIStatusCmd() *cobra.Command {
+	var outputJSON bool
+	cmd := &cobra.Command{
+		Use:   "capi-status",
+		Short: "Show status of CAPI controllers on the hub",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := provisioning.New(c, cfg, logger)
+			statuses, err := mgr.CAPIControllerStatus(context.Background())
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				data, _ := json.MarshalIndent(statuses, "", "  ")
+				fmt.Println(string(data))
+				return nil
+			}
+			fmt.Println(provisioning.FormatCAPIControllerStatus(statuses))
 			return nil
 		},
 	}

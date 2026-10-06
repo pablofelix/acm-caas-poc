@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/pablofelix/acm-caas-poc/internal/pool"
+	"github.com/pablofelix/acm-caas-poc/internal/provisioning"
 )
 
 func poolCmd() *cobra.Command {
@@ -21,7 +23,7 @@ func poolCmd() *cobra.Command {
 
 func poolCreateCmd() *cobra.Command {
 	var size int
-	var platform, region, imageSet, baseDomain, namespace string
+	var platform, region, imageSet, baseDomain, namespace, pullSecretFile string
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -32,7 +34,28 @@ func poolCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			mgr := pool.New(c, cfg, logger)
+
+			if platform == "" {
+				platform = cfg.Platform
+			}
+			if region == "" {
+				if platform == "aws" {
+					region = cfg.AWSRegion
+				} else {
+					region = cfg.IBMCloudRegion
+				}
+			}
+			if baseDomain == "" {
+				if platform == "aws" && cfg.AWSBaseDomain != "" {
+					baseDomain = cfg.AWSBaseDomain
+				} else {
+					baseDomain = cfg.BaseDomain
+				}
+			}
+			if imageSet == "" {
+				imageSet = cfg.ClusterImageSet
+			}
+
 			opts := pool.PoolOpts{
 				Name:       args[0],
 				Namespace:  namespace,
@@ -42,19 +65,42 @@ func poolCreateCmd() *cobra.Command {
 				ImageSet:   imageSet,
 				BaseDomain: baseDomain,
 			}
+
+			if pullSecretFile != "" {
+				data, err := os.ReadFile(pullSecretFile)
+				if err != nil {
+					return fmt.Errorf("reading pull secret: %w", err)
+				}
+				opts.PullSecret = string(data)
+			}
+
+			if platform == "ibmcloud" {
+				opts.IBMCloudAPIKey = cfg.IBMCloudAPIKey
+			}
+			if platform == "aws" {
+				awsCreds, err := provisioning.LoadAWSCredentials("")
+				if err != nil {
+					return fmt.Errorf("loading AWS credentials: %w", err)
+				}
+				opts.AWSAccessKeyID = awsCreds.AccessKeyID
+				opts.AWSSecretAccessKey = awsCreds.SecretAccessKey
+			}
+
+			mgr := pool.New(c, cfg, logger)
 			if err := mgr.CreatePool(context.Background(), opts); err != nil {
 				return err
 			}
-			fmt.Printf("ClusterPool %s created (size=%d)\n", args[0], size)
+			fmt.Printf("ClusterPool %s created (size=%d, platform=%s, region=%s)\n", args[0], size, platform, region)
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&size, "size", 3, "Number of pre-warmed clusters")
-	cmd.Flags().StringVar(&platform, "platform", "", "Cloud platform (default: ibmcloud)")
-	cmd.Flags().StringVar(&region, "region", "", "Cloud region (default: us-south)")
+	cmd.Flags().IntVar(&size, "size", 2, "Number of pre-warmed clusters")
+	cmd.Flags().StringVar(&platform, "platform", "", "Cloud platform (default from config)")
+	cmd.Flags().StringVar(&region, "region", "", "Cloud region (default from config)")
 	cmd.Flags().StringVar(&imageSet, "image-set", "", "ClusterImageSet name")
-	cmd.Flags().StringVar(&baseDomain, "base-domain", "", "Base domain (default: example.com)")
+	cmd.Flags().StringVar(&baseDomain, "base-domain", "", "Base domain (default from config)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Pool namespace (default: pool name)")
+	cmd.Flags().StringVar(&pullSecretFile, "pull-secret", "", "Path to pull secret file")
 	return cmd
 }
 

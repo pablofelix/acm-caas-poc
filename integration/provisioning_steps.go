@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -19,6 +20,8 @@ func registerProvisioningSteps(sc *godog.ScenarioContext, s *suiteContext) {
 	sc.Step(`^cloud credentials exist as a Secret in namespace "([^"]*)"$`, s.cloudCredentialsExist)
 	sc.Step(`^a ClusterImageSet for the target OCP version exists$`, s.clusterImageSetExists)
 	sc.Step(`^I provision cluster "([^"]*)" with default settings$`, s.iProvisionCluster)
+	sc.Step(`^I provision cluster "([^"]*)" on platform "([^"]*)"$`, s.iProvisionClusterOnPlatform)
+	sc.Step(`^the ACM credential "([^"]*)" exists in open-cluster-management namespace$`, s.acmCredentialExists)
 	sc.Step(`^the ClusterDeployment "([^"]*)" is accepted by Hive$`, s.clusterDeploymentAccepted)
 	sc.Step(`^the cluster "([^"]*)" eventually reaches Provisioned = True$`, s.clusterReachesProvisioned)
 	sc.Step(`^I list all provisioned clusters$`, s.iListProvisionedClusters)
@@ -33,6 +36,16 @@ func (s *suiteContext) cloudCredentialsExist(ctx context.Context, ns string) err
 		"aws_access_key_id", "credentials", "osServicePrincipal.json",
 		"ibmcloud_api_key",
 	}
+
+	nsObj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Namespace",
+			"metadata":   map[string]interface{}{"name": ns},
+		},
+	}
+	_ = s.client.CreateIfNotExists(ctx, client.GVRNamespace, "", nsObj)
+
 	list, err := s.client.List(ctx, client.GVRSecret, ns, "")
 	if err != nil {
 		return fmt.Errorf("listing secrets in %s: %w", ns, err)
@@ -48,10 +61,115 @@ func (s *suiteContext) cloudCredentialsExist(ctx context.Context, ns string) err
 			if isStr && str == "" {
 				continue
 			}
+			fmt.Printf("\n  ┌─ Credentials found in namespace %s\n", ns)
+			fmt.Printf("  │  Secret: %s, key: %s\n", secret.GetName(), key)
+			fmt.Printf("  └─\n")
 			return nil
 		}
 	}
-	return fmt.Errorf("no cloud credential secret with non-empty data found in namespace %s (checked keys: %v)", ns, credentialKeys)
+
+	if s.cfg.Platform == "aws" {
+		awsCreds, err := provisioning.LoadAWSCredentials("")
+		if err != nil {
+			return fmt.Errorf("loading AWS credentials: %w", err)
+		}
+		creds := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Secret",
+				"metadata":   map[string]interface{}{"name": ns + "-aws-creds", "namespace": ns},
+				"type":       "Opaque",
+				"stringData": map[string]interface{}{
+					"aws_access_key_id":     awsCreds.AccessKeyID,
+					"aws_secret_access_key": awsCreds.SecretAccessKey,
+				},
+			},
+		}
+		if err := s.client.CreateIfNotExists(ctx, client.GVRSecret, ns, creds); err != nil {
+			return fmt.Errorf("creating AWS credential secret in %s: %w", ns, err)
+		}
+		fmt.Printf("\n  ┌─ Created AWS credential secret in namespace %s\n", ns)
+		fmt.Printf("  └─\n")
+		return nil
+	}
+
+	if s.cfg.IBMCloudAPIKey != "" {
+		creds := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Secret",
+				"metadata":   map[string]interface{}{"name": ns + "-creds", "namespace": ns},
+				"type":       "Opaque",
+				"stringData": map[string]interface{}{"ibmcloud_api_key": s.cfg.IBMCloudAPIKey},
+			},
+		}
+		if err := s.client.CreateIfNotExists(ctx, client.GVRSecret, ns, creds); err != nil {
+			return fmt.Errorf("creating IBM credential secret in %s: %w", ns, err)
+		}
+		fmt.Printf("\n  ┌─ Created IBM Cloud credential secret in namespace %s\n", ns)
+		fmt.Printf("  └─\n")
+		return nil
+	}
+
+	return fmt.Errorf("no cloud credential secret found in namespace %s and no credentials configured", ns)
+}
+
+func (s *suiteContext) acmCredentialExists(ctx context.Context, name string) error {
+	_, err := s.client.Get(ctx, client.GVRSecret, "open-cluster-management", name)
+	if err != nil {
+		return fmt.Errorf("ACM credential %q not found in open-cluster-management: %w", name, err)
+	}
+	fmt.Printf("\n  ┌─ ACM credential %q verified in open-cluster-management namespace\n", name)
+	fmt.Printf("  └─\n")
+	return nil
+}
+
+func (s *suiteContext) iProvisionClusterOnPlatform(ctx context.Context, name, platform string) error {
+	resolved := s.resolveCluster(name)
+	pullSecret, err := s.fetchPullSecret(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching pull secret: %w", err)
+	}
+	opts := provisioning.ClusterOpts{
+		Name:       resolved,
+		Platform:   platform,
+		PullSecret: pullSecret,
+	}
+	switch platform {
+	case "aws":
+		awsCreds, err := provisioning.LoadAWSCredentials("")
+		if err != nil {
+			return fmt.Errorf("loading AWS credentials: %w", err)
+		}
+		opts.AWSAccessKeyID = awsCreds.AccessKeyID
+		opts.AWSSecretAccessKey = awsCreds.SecretAccessKey
+	case "ibmcloud":
+		apiKey, err := s.fetchACMCredentialKey("ibm-caas-creds", "ibmcloud_api_key")
+		if err != nil {
+			return fmt.Errorf("reading IBM Cloud API key from ACM credential: %w", err)
+		}
+		opts.IBMCloudAPIKey = apiKey
+	}
+	fmt.Printf("\n  ┌─ Provisioning cluster %q (platform=%s)\n", resolved, platform)
+	fmt.Printf("  └─\n")
+	return s.provisioner.Create(ctx, opts)
+}
+
+func (s *suiteContext) fetchACMCredentialKey(secretName, key string) (string, error) {
+	obj, err := s.client.Get(context.Background(), client.GVRSecret, "open-cluster-management", secretName)
+	if err != nil {
+		return "", fmt.Errorf("getting ACM credential %q: %w", secretName, err)
+	}
+	data, _, _ := unstructured.NestedMap(obj.Object, "data")
+	encoded, ok := data[key].(string)
+	if !ok || encoded == "" {
+		return "", fmt.Errorf("key %q not found in ACM credential %q", key, secretName)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return encoded, nil
+	}
+	return string(decoded), nil
 }
 
 func (s *suiteContext) clusterImageSetExists(ctx context.Context) error {
@@ -66,24 +184,65 @@ func (s *suiteContext) clusterImageSetExists(ctx context.Context) error {
 }
 
 func (s *suiteContext) iProvisionCluster(ctx context.Context, name string) error {
-	return s.provisioner.Create(ctx, provisioning.ClusterOpts{
-		Name: name,
-	})
+	pullSecret, err := s.fetchPullSecret(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching pull secret: %w", err)
+	}
+	opts := provisioning.ClusterOpts{
+		Name:       name,
+		PullSecret: pullSecret,
+	}
+	region := s.cfg.IBMCloudRegion
+	if s.cfg.Platform == "aws" {
+		region = s.cfg.AWSRegion
+		awsCreds, err := provisioning.LoadAWSCredentials("")
+		if err != nil {
+			return fmt.Errorf("loading AWS credentials: %w", err)
+		}
+		opts.AWSAccessKeyID = awsCreds.AccessKeyID
+		opts.AWSSecretAccessKey = awsCreds.SecretAccessKey
+	}
+	fmt.Printf("\n  ┌─ Provisioning cluster %q (platform=%s, region=%s, image=%s)\n", name, s.cfg.Platform, region, s.cfg.ClusterImageSet)
+	fmt.Printf("  └─\n")
+	return s.provisioner.Create(ctx, opts)
+}
+
+func (s *suiteContext) fetchPullSecret(ctx context.Context) (string, error) {
+	obj, err := s.client.Get(ctx, client.GVRSecret, "openshift-config", "pull-secret")
+	if err != nil {
+		return "", fmt.Errorf("reading pull-secret from openshift-config: %w", err)
+	}
+	data, _, _ := unstructured.NestedMap(obj.Object, "data")
+	if encoded, ok := data[".dockerconfigjson"].(string); ok {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return encoded, nil
+		}
+		return string(decoded), nil
+	}
+	return "", fmt.Errorf("pull-secret does not contain .dockerconfigjson")
 }
 
 func (s *suiteContext) clusterDeploymentAccepted(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
-	return err
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n  ┌─ ClusterDeployment %q accepted by Hive\n", resolved)
+	fmt.Printf("  └─\n")
+	return nil
 }
 
 func (s *suiteContext) clusterReachesProvisioned(ctx context.Context, name string) error {
-	timeout := 20 * time.Minute
+	resolved := s.resolveCluster(name)
+	timeout := 45 * time.Minute
 	interval := 30 * time.Second
 	deadline := time.After(timeout)
 	for {
-		obj, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+		obj, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 		if err != nil {
-			return fmt.Errorf("ClusterDeployment %s not found: %w", name, err)
+			return fmt.Errorf("ClusterDeployment %s not found: %w", resolved, err)
 		}
 		conditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 		for _, raw := range conditions {
@@ -99,7 +258,7 @@ func (s *suiteContext) clusterReachesProvisioned(ctx context.Context, name strin
 		}
 		select {
 		case <-deadline:
-			return fmt.Errorf("ClusterDeployment %s did not reach Provisioned within %v", name, timeout)
+			return fmt.Errorf("ClusterDeployment %s did not reach Provisioned within %v", resolved, timeout)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(interval):
@@ -120,25 +279,42 @@ func (s *suiteContext) receiveClusterDeploymentList() error {
 	if s.provisionList == nil {
 		return fmt.Errorf("no provisioned clusters returned")
 	}
+	fmt.Printf("\n  ┌─ Provisioned clusters: %d\n", len(s.provisionList))
+	for _, c := range s.provisionList {
+		status := "Provisioned"
+		if !c.Provisioned {
+			status = "Pending"
+		}
+		if c.FailureReason != "" {
+			status = "Failed: " + c.FailureReason
+		}
+		fmt.Printf("  │  %-20s region=%-12s image=%-28s status=%s\n", c.Name, c.Region, c.ImageSet, status)
+	}
+	fmt.Printf("  └─\n")
 	return nil
 }
 
 func (s *suiteContext) clusterDeploymentProvisioned(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 	return err
 }
 
 func (s *suiteContext) iDestroyCluster(ctx context.Context, name string) error {
-	return s.provisioner.Destroy(ctx, name)
+	resolved := s.resolveCluster(name)
+	return s.provisioner.Destroy(ctx, resolved)
 }
 
 func (s *suiteContext) clusterDeploymentRemoved(ctx context.Context, name string) error {
-	_, err := s.client.Get(ctx, client.GVRClusterDeployment, name, name)
+	resolved := s.resolveCluster(name)
+	_, err := s.client.Get(ctx, client.GVRClusterDeployment, resolved, resolved)
 	if err == nil {
-		return fmt.Errorf("ClusterDeployment %s still exists", name)
+		return fmt.Errorf("ClusterDeployment %s still exists", resolved)
 	}
 	if !errors.IsNotFound(err) {
-		return fmt.Errorf("unexpected error checking ClusterDeployment %s: %w", name, err)
+		return fmt.Errorf("unexpected error checking ClusterDeployment %s: %w", resolved, err)
 	}
+	fmt.Printf("\n  ┌─ ClusterDeployment %q confirmed removed\n", resolved)
+	fmt.Printf("  └─\n")
 	return nil
 }

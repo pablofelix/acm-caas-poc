@@ -32,7 +32,7 @@ cat <<EOF | oc apply -f -
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: thanos-rule-custom-rules
+  name: thanos-ruler-custom-rules
   namespace: ${NS}
 data:
   custom_rules.yaml: |
@@ -84,18 +84,69 @@ data:
 EOF
 
 echo ""
-echo "6. Verify resources"
-oc get secret -n "${NS}" multiclusterhub-operator-pull-secret
-oc get objectbucketclaim -n "${NS}" observability-obc
-oc get configmap -n "${NS}" thanos-rule-custom-rules
-oc get configmap -n "${NS}" gpu-overview
-oc get configmap -n "${NS}" observability-metrics-custom-allowlist
+echo "6. Configure Alertmanager"
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: ${NS}
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    route:
+      receiver: default
+      group_by: ['alertname', 'cluster']
+    receivers:
+      - name: default
+EOF
 
 echo ""
-echo "7. Clean up"
+echo "7. Disable alert forwarding"
+oc annotate multiclusterobservabilities.observability.open-cluster-management.io observability \
+  mco-disable-alerting="true" --overwrite
+
+echo ""
+echo "8. Re-enable alert forwarding"
+oc annotate multiclusterobservabilities.observability.open-cluster-management.io observability \
+  mco-disable-alerting- --overwrite
+
+echo ""
+echo "9. Disable observability for a cluster"
+oc label managedcluster spoke1 observability=disabled --overwrite
+
+echo ""
+echo "10. Re-enable observability for a cluster"
+oc label managedcluster spoke1 observability- --overwrite
+
+echo ""
+echo "11. Discover Grafana URL"
+oc get route -n "${NS}" grafana -o jsonpath='https://{.spec.host}'
+echo ""
+
+echo ""
+echo "12. Verify resources"
+oc get secret -n "${NS}" multiclusterhub-operator-pull-secret
+oc get objectbucketclaim -n "${NS}" observability-obc
+oc get configmap -n "${NS}" thanos-ruler-custom-rules
+oc get configmap -n "${NS}" gpu-overview
+oc get configmap -n "${NS}" observability-metrics-custom-allowlist
+oc get secret -n "${NS}" alertmanager-config
+
+echo ""
+echo "13. Diagnose observability health"
+acmlab observability diagnose
+
+echo ""
+echo "14. Diagnose and auto-repair"
+acmlab observability diagnose --repair
+
+echo ""
+echo "15. Clean up"
+oc delete secret -n "${NS}" alertmanager-config
 oc delete configmap -n "${NS}" observability-metrics-custom-allowlist
 oc delete configmap -n "${NS}" gpu-overview
-oc delete configmap -n "${NS}" thanos-rule-custom-rules
+oc delete configmap -n "${NS}" thanos-ruler-custom-rules
 oc delete objectbucketclaim -n "${NS}" observability-obc
 
 echo ""

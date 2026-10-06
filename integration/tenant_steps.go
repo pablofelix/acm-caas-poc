@@ -28,11 +28,13 @@ func registerTenantSteps(sc *godog.ScenarioContext, s *suiteContext) {
 }
 
 func (s *suiteContext) aManagedClusterExistsTenant(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, err := s.fleet.GetCluster(ctx, name)
 	return err
 }
 
 func (s *suiteContext) iDeployTenant(ctx context.Context, tenantName, cluster, cpu, memory string) error {
+	cluster = s.resolveCluster(cluster)
 	return s.tenant.Deploy(ctx, tenant.TenantOpts{
 		Name:    tenantName,
 		Cluster: cluster,
@@ -83,6 +85,7 @@ func (s *suiteContext) manifestWorkContainsResources(ctx context.Context) error 
 }
 
 func (s *suiteContext) tenantIsDeployed(ctx context.Context, tenantName, cluster string) error {
+	cluster = s.resolveCluster(cluster)
 	_, err := s.tenant.Status(ctx, tenantName, cluster)
 	if err != nil {
 		return s.iDeployTenant(ctx, tenantName, cluster, "4", "8Gi")
@@ -91,6 +94,7 @@ func (s *suiteContext) tenantIsDeployed(ctx context.Context, tenantName, cluster
 }
 
 func (s *suiteContext) iListTenants(ctx context.Context, cluster string) error {
+	cluster = s.resolveCluster(cluster)
 	tenants, err := s.tenant.List(ctx, cluster)
 	if err != nil {
 		return err
@@ -109,6 +113,7 @@ func (s *suiteContext) listIncludesTenant(name string) error {
 }
 
 func (s *suiteContext) iGetTenantStatus(ctx context.Context, tenantName, cluster string) error {
+	cluster = s.resolveCluster(cluster)
 	status, err := s.tenant.Status(ctx, tenantName, cluster)
 	if err != nil {
 		return err
@@ -125,6 +130,7 @@ func (s *suiteContext) receiveManifestWorkStatus() error {
 }
 
 func (s *suiteContext) iRemoveTenant(ctx context.Context, tenantName, cluster string) error {
+	cluster = s.resolveCluster(cluster)
 	_, err := s.tenant.Remove(ctx, tenantName, cluster)
 	return err
 }

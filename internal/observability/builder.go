@@ -268,21 +268,6 @@ func buildDashboardConfigMap(ns, name, dashJSON string) *unstructured.Unstructur
 	}
 }
 
-func buildMetricsAllowlistConfigMap(ns string, metrics []string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "v1",
-			"kind":       "ConfigMap",
-			"metadata": map[string]interface{}{
-				"name":      MetricsAllowlistCM,
-				"namespace": ns,
-			},
-			"data": map[string]interface{}{
-				"metrics_list.yaml": "names:\n" + metricsToYAML(metrics),
-			},
-		},
-	}
-}
 
 func metricsToYAML(metrics []string) string {
 	var sb strings.Builder
@@ -291,3 +276,4 @@ func metricsToYAML(metrics []string) string {
 	}
 	return sb.String()
 }
+

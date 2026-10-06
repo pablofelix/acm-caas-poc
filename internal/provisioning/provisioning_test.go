@@ -183,6 +183,61 @@ func TestCreateAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestCreateAWSUsesAWSBaseDomainAndRegion(t *testing.T) {
+	c := fakeClient()
+	cfg := testConfig()
+	cfg.AWSRegion = "us-east-1"
+	cfg.AWSBaseDomain = "aws-zone.example.com"
+	m := New(c, cfg, discardLogger)
+
+	err := m.Create(context.Background(), ClusterOpts{
+		Name:               "aws-spoke",
+		Platform:           "aws",
+		PullSecret:         `{"auths":{}}`,
+		AWSAccessKeyID:     "test-access-key-id",
+		AWSSecretAccessKey: "test-secret-access-key",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	cd, _ := c.Get(context.Background(), client.GVRClusterDeployment, "aws-spoke", "aws-spoke")
+	spec, _ := cd.Object["spec"].(map[string]interface{})
+	if spec["baseDomain"] != "aws-zone.example.com" {
+		t.Errorf("baseDomain = %v, want aws-zone.example.com", spec["baseDomain"])
+	}
+	platform, _ := spec["platform"].(map[string]interface{})
+	aws, _ := platform["aws"].(map[string]interface{})
+	if aws["region"] != "us-east-1" {
+		t.Errorf("region = %v, want us-east-1", aws["region"])
+	}
+}
+
+func TestCreateAWSFallsBackToBaseDomain(t *testing.T) {
+	c := fakeClient()
+	cfg := testConfig()
+	cfg.AWSRegion = "us-east-1"
+	cfg.AWSBaseDomain = ""
+	m := New(c, cfg, discardLogger)
+
+	err := m.Create(context.Background(), ClusterOpts{
+		Name:               "aws-spoke",
+		Platform:           "aws",
+		PullSecret:         `{"auths":{}}`,
+		AWSAccessKeyID:     "test-access-key-id",
+		AWSSecretAccessKey: "test-secret-access-key",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	cd, _ := c.Get(context.Background(), client.GVRClusterDeployment, "aws-spoke", "aws-spoke")
+	spec, _ := cd.Object["spec"].(map[string]interface{})
+	if spec["baseDomain"] != "example.com" {
+		t.Errorf("baseDomain = %v, want example.com (fallback)", spec["baseDomain"])
+	}
+}
+
 func TestDestroyDeletesClusterDeployment(t *testing.T) {
 	cd := &unstructured.Unstructured{}
 	cd.SetGroupVersionKind(schema.GroupVersionKind{
@@ -386,8 +441,24 @@ func TestCreateWithSSHKey(t *testing.T) {
 	}
 }
 
+func fakeClusterDeployment(name string, installed bool) *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
+	})
+	obj.SetName(name)
+	obj.SetNamespace(name)
+	obj.SetResourceVersion("1")
+	if installed {
+		obj.Object["spec"] = map[string]interface{}{"installed": true}
+		obj.Object["status"] = map[string]interface{}{"installed": true}
+	}
+	return obj
+}
+
 func TestWaitForProvisionInstalled(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -398,15 +469,7 @@ func TestWaitForProvisionInstalled(t *testing.T) {
 	m := New(c, cfg, discardLogger)
 
 	go func() {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj.SetName("spoke1")
-		obj.SetNamespace("spoke1")
-		obj.Object["status"] = map[string]interface{}{
-			"installed": true,
-		}
+		obj := fakeClusterDeployment("spoke1", true)
 		watcher.Modify(obj)
 	}()
 
@@ -417,7 +480,8 @@ func TestWaitForProvisionInstalled(t *testing.T) {
 }
 
 func TestWaitForProvisionFailure(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -426,12 +490,7 @@ func TestWaitForProvisionFailure(t *testing.T) {
 	m := New(c, testConfig(), discardLogger)
 
 	go func() {
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj.SetName("spoke1")
-		obj.SetNamespace("spoke1")
+		obj := fakeClusterDeployment("spoke1", false)
 		obj.Object["status"] = map[string]interface{}{
 			"conditions": []interface{}{
 				map[string]interface{}{
@@ -454,7 +513,8 @@ func TestWaitForProvisionFailure(t *testing.T) {
 }
 
 func TestWaitForProvisionTimeout(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -471,31 +531,44 @@ func TestWaitForProvisionTimeout(t *testing.T) {
 	}
 }
 
-func TestWaitForProvisionChannelClosed(t *testing.T) {
-	c := fakeClient()
+func TestWaitForProvisionChannelClosedReconnects(t *testing.T) {
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
-	watcher := watch.NewFake()
-	fakeD.PrependWatchReactor("clusterdeployments", k8stesting.DefaultWatchReactor(watcher, nil))
+	watcher1 := watch.NewFake()
+	watcher2 := watch.NewFake()
+	callCount := 0
+	fakeD.PrependWatchReactor("clusterdeployments", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		callCount++
+		if callCount == 1 {
+			return true, watcher1, nil
+		}
+		return true, watcher2, nil
+	})
 
 	m := New(c, testConfig(), discardLogger)
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		watcher.Stop()
+		watcher1.Stop()
+		time.Sleep(50 * time.Millisecond)
+		obj := fakeClusterDeployment("spoke1", true)
+		watcher2.Modify(obj)
 	}()
 
 	err := m.WaitForProvision(context.Background(), "spoke1", 5*time.Second)
-	if err == nil {
-		t.Fatal("expected error for closed channel")
+	if err != nil {
+		t.Fatalf("WaitForProvision should reconnect after channel close, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "watch channel closed") {
-		t.Errorf("expected channel closed error, got: %v", err)
+	if callCount < 2 {
+		t.Errorf("expected at least 2 watch calls (reconnect), got %d", callCount)
 	}
 }
 
 func TestWaitForProvisionDefaultTimeout(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -505,7 +578,6 @@ func TestWaitForProvisionDefaultTimeout(t *testing.T) {
 	cfg.ProvisionTimeout = 100 * time.Millisecond
 	m := New(c, cfg, discardLogger)
 
-	// timeout=0 should use cfg.ProvisionTimeout
 	err := m.WaitForProvision(context.Background(), "spoke1", 0)
 	if err == nil {
 		t.Fatal("expected timeout error")
@@ -516,7 +588,8 @@ func TestWaitForProvisionDefaultTimeout(t *testing.T) {
 }
 
 func TestWaitForProvisionNotYetInstalled(t *testing.T) {
-	c := fakeClient()
+	cd := fakeClusterDeployment("spoke1", false)
+	c := fakeClient(cd)
 	fakeD := c.Dynamic.(*dynamicfake.FakeDynamicClient)
 
 	watcher := watch.NewFake()
@@ -527,33 +600,30 @@ func TestWaitForProvisionNotYetInstalled(t *testing.T) {
 	m := New(c, cfg, discardLogger)
 
 	go func() {
-		// First event: not yet installed
-		obj1 := &unstructured.Unstructured{}
-		obj1.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj1.SetName("spoke1")
-		obj1.Object["status"] = map[string]interface{}{
-			"installed": false,
-		}
+		obj1 := fakeClusterDeployment("spoke1", false)
 		watcher.Modify(obj1)
 
-		// Second event: installed
 		time.Sleep(50 * time.Millisecond)
-		obj2 := &unstructured.Unstructured{}
-		obj2.SetGroupVersionKind(schema.GroupVersionKind{
-			Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
-		})
-		obj2.SetName("spoke1")
-		obj2.Object["status"] = map[string]interface{}{
-			"installed": true,
-		}
+		obj2 := fakeClusterDeployment("spoke1", true)
 		watcher.Modify(obj2)
 	}()
 
 	err := m.WaitForProvision(context.Background(), "spoke1", 0)
 	if err != nil {
 		t.Fatalf("WaitForProvision failed: %v", err)
+	}
+}
+
+func TestWaitForProvisionAlreadyInstalled(t *testing.T) {
+	cd := fakeClusterDeployment("spoke1", true)
+	cd.Object["spec"] = map[string]interface{}{"installed": true}
+	c := fakeClient(cd)
+
+	m := New(c, testConfig(), discardLogger)
+
+	err := m.WaitForProvision(context.Background(), "spoke1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("WaitForProvision should return immediately for installed cluster: %v", err)
 	}
 }
 
@@ -582,10 +652,12 @@ func TestCreateAWSPlatform(t *testing.T) {
 	m := New(c, cfg, discardLogger)
 
 	err := m.Create(context.Background(), ClusterOpts{
-		Name:       "aws1",
-		Platform:   "aws",
-		PullSecret: `{"auths":{}}`,
-		Region:     "us-east-1",
+		Name:               "aws1",
+		Platform:           "aws",
+		PullSecret:         `{"auths":{}}`,
+		Region:             "us-east-1",
+		AWSAccessKeyID:     "test-access-key-id",
+		AWSSecretAccessKey: "test-secret-access-key",
 	})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
@@ -827,4 +899,73 @@ func TestListMultipleImageSets(t *testing.T) {
 	}
 }
 
+func TestDestroyIfFailedCleansFailedCluster(t *testing.T) {
+	cd := &unstructured.Unstructured{}
+	cd.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
+	})
+	cd.SetName("broken")
+	cd.SetNamespace("broken")
+	cd.Object["status"] = map[string]interface{}{
+		"conditions": []interface{}{
+			map[string]interface{}{
+				"type":   "ProvisionFailed",
+				"status": "True",
+				"reason": "InfraError",
+			},
+		},
+	}
 
+	c := fakeClient(cd)
+	m := New(c, testConfig(), discardLogger)
+
+	destroyed, err := m.DestroyIfFailed(context.Background(), "broken")
+	if err != nil {
+		t.Fatalf("DestroyIfFailed returned error: %v", err)
+	}
+	if !destroyed {
+		t.Error("expected destroyed=true for failed cluster")
+	}
+}
+
+func TestDestroyIfFailedSkipsHealthyCluster(t *testing.T) {
+	cd := &unstructured.Unstructured{}
+	cd.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "hive.openshift.io", Version: "v1", Kind: "ClusterDeployment",
+	})
+	cd.SetName("healthy")
+	cd.SetNamespace("healthy")
+	cd.Object["status"] = map[string]interface{}{
+		"installed": true,
+		"conditions": []interface{}{
+			map[string]interface{}{
+				"type":   "Provisioned",
+				"status": "True",
+			},
+		},
+	}
+
+	c := fakeClient(cd)
+	m := New(c, testConfig(), discardLogger)
+
+	destroyed, err := m.DestroyIfFailed(context.Background(), "healthy")
+	if err != nil {
+		t.Fatalf("DestroyIfFailed returned error: %v", err)
+	}
+	if destroyed {
+		t.Error("expected destroyed=false for healthy cluster")
+	}
+}
+
+func TestDestroyIfFailedNonexistentReturnsNoError(t *testing.T) {
+	c := fakeClient()
+	m := New(c, testConfig(), discardLogger)
+
+	destroyed, err := m.DestroyIfFailed(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("DestroyIfFailed returned error: %v", err)
+	}
+	if destroyed {
+		t.Error("expected destroyed=false for nonexistent cluster")
+	}
+}

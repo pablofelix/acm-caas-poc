@@ -49,6 +49,7 @@ func (s *suiteContext) iHaveKubeconfigForCluster(name string) error {
 }
 
 func (s *suiteContext) iImportClusterWithLabels(ctx context.Context, name, labelStr string) error {
+	name = s.resolveCluster(name)
 	labels := map[string]string{}
 	for _, pair := range strings.Split(labelStr, ",") {
 		parts := strings.SplitN(pair, "=", 2)
@@ -65,6 +66,7 @@ func (s *suiteContext) iImportClusterWithLabels(ctx context.Context, name, label
 }
 
 func (s *suiteContext) managedClusterExistsOnHub(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, err := s.client.Get(ctx, client.GVRManagedCluster, "", name)
 	if err != nil {
 		return fmt.Errorf("ManagedCluster %s not found: %w", name, err)
@@ -89,6 +91,7 @@ func (s *suiteContext) autoImportSecretExists(ctx context.Context, ns string) er
 }
 
 func (s *suiteContext) clusterHasBeenImported(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	imported, err := s.importing.IsImported(ctx, name)
 	if err != nil {
 		return err
@@ -101,6 +104,7 @@ func (s *suiteContext) clusterHasBeenImported(ctx context.Context, name string) 
 }
 
 func (s *suiteContext) iGetImportStatus(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	status, err := s.importing.GetImportStatus(ctx, name)
 	if err != nil {
 		return err
@@ -135,10 +139,12 @@ func (s *suiteContext) importListIncludes(name string) error {
 }
 
 func (s *suiteContext) iDetachCluster(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	return s.importing.Detach(ctx, name)
 }
 
 func (s *suiteContext) managedClusterRemovedFromHub(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	_, err := s.client.Get(ctx, client.GVRManagedCluster, "", name)
 	if err == nil {
 		return fmt.Errorf("ManagedCluster %s still exists", name)

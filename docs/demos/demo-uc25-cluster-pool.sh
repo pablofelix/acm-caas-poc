@@ -3,13 +3,14 @@
 # Demo: create pool, claim cluster, release claim
 set -euo pipefail
 
-POOL="${1:-amd64-419}"
+POOL="${1:-caas-pool}"
 
 echo "=== UC-25: ClusterPool & ClusterClaim ==="
 
 echo "--- Step 1: Create cluster pool ---"
-acmlab pool create "$POOL" --size 3 --image-set img4.19-multi \
-    --platform ibmcloud --region us-south --base-domain example.com
+acmlab pool create "$POOL" --size 2 --image-set img4.22.9-multi-appsub \
+    --platform ibmcloud --region us-south --base-domain example.com \
+    --pull-secret ~/pull-secret.json
 
 echo "--- Step 2: List pools ---"
 acmlab pool list

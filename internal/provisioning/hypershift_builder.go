@@ -1,10 +1,19 @@
 package provisioning
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func generateClusterID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
 
 func buildHostedCluster(opts HyperShiftOpts) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
@@ -28,9 +37,37 @@ func buildHostedCluster(opts HyperShiftOpts) *unstructured.Unstructured {
 				"platform": map[string]interface{}{
 					"type": platformToHyperShiftType(opts.Platform),
 				},
-				"infraID":    opts.InfraID,
-				"clusterID":  opts.Name,
-				"baseDomain": opts.BaseDomain,
+				"infraID":   opts.InfraID,
+				"clusterID": generateClusterID(),
+				"dns": map[string]interface{}{
+					"baseDomain": opts.BaseDomain,
+				},
+				"services": []interface{}{
+					map[string]interface{}{
+						"service":            "APIServer",
+						"servicePublishingStrategy": map[string]interface{}{
+							"type": "LoadBalancer",
+						},
+					},
+					map[string]interface{}{
+						"service":            "OAuthServer",
+						"servicePublishingStrategy": map[string]interface{}{
+							"type": "Route",
+						},
+					},
+					map[string]interface{}{
+						"service":            "Konnectivity",
+						"servicePublishingStrategy": map[string]interface{}{
+							"type": "Route",
+						},
+					},
+					map[string]interface{}{
+						"service":            "Ignition",
+						"servicePublishingStrategy": map[string]interface{}{
+							"type": "Route",
+						},
+					},
+				},
 				"networking": map[string]interface{}{
 					"clusterNetwork": []interface{}{
 						map[string]interface{}{
@@ -45,6 +82,14 @@ func buildHostedCluster(opts HyperShiftOpts) *unstructured.Unstructured {
 				},
 				"etcd": map[string]interface{}{
 					"managementType": "Managed",
+					"managed": map[string]interface{}{
+						"storage": map[string]interface{}{
+							"persistentVolume": map[string]interface{}{
+								"size": "8Gi",
+							},
+							"type": "PersistentVolume",
+						},
+					},
 				},
 			},
 		},

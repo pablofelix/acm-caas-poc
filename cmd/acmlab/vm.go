@@ -23,6 +23,9 @@ func vmCmd() *cobra.Command {
 		vmMigrateCmd(),
 		vmStatusCmd(),
 		vmListCmd(),
+		vmEnsureCNVCmd(),
+		vmCNVStatusCmd(),
+		vmRemoveCNVCmd(),
 	)
 	return cmd
 }
@@ -221,6 +224,81 @@ func vmStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&cluster, "cluster", "", "target cluster name (required)")
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func vmEnsureCNVCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ensure-cnv <cluster>",
+		Short: "Install OpenShift Virtualization on a managed cluster via governance policy",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := virtualization.New(c, cfg, logger)
+			fmt.Printf("Ensuring OpenShift Virtualization on %s...\n", args[0])
+			if err := mgr.EnsureCNVOperator(context.Background(), args[0]); err != nil {
+				return err
+			}
+			fmt.Println("CNV operator policy applied. Use 'acmlab vm cnv-status' to check progress.")
+			return nil
+		},
+	}
+	return cmd
+}
+
+func vmCNVStatusCmd() *cobra.Command {
+	var outputJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "cnv-status <cluster>",
+		Short: "Check OpenShift Virtualization installation status on a managed cluster",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := virtualization.New(c, cfg, logger)
+			status, err := mgr.CNVStatus(context.Background(), args[0])
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				data, _ := json.MarshalIndent(status, "", "  ")
+				fmt.Println(string(data))
+				return nil
+			}
+			fmt.Printf("Cluster:   %s\n", status.Cluster)
+			fmt.Printf("Status:    %s\n", status.Compliant)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output as JSON")
+	return cmd
+}
+
+func vmRemoveCNVCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove-cnv <cluster>",
+		Short: "Remove OpenShift Virtualization governance policy from a managed cluster",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := buildClient()
+			if err != nil {
+				return err
+			}
+			mgr := virtualization.New(c, cfg, logger)
+			fmt.Printf("Removing CNV policy for %s...\n", args[0])
+			if err := mgr.RemoveCNVOperator(context.Background(), args[0]); err != nil {
+				return err
+			}
+			fmt.Println("CNV operator policy removed.")
+			return nil
+		},
+	}
 	return cmd
 }
 

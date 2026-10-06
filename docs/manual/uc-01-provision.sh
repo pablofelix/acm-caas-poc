@@ -32,6 +32,19 @@ API_KEY="<your-cloud-api-key>"
 # ═════════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────────────
+# Step 0: Preflight checks
+# ─────────────────────────────────────────────────────────────────────
+# Validates credentials, cloud quota, image sets, and name conflicts
+# before creating any resources. Catches problems in seconds instead
+# of failing after 40 minutes of provisioning.
+
+echo "=== Step 0: Preflight checks ==="
+
+acmlab provision preflight "$CLUSTER_NAME" \
+  --platform "$PLATFORM" \
+  --pull-secret "$PULL_SECRET_FILE"
+
+# ─────────────────────────────────────────────────────────────────────
 # Step 1: Create namespace
 # ─────────────────────────────────────────────────────────────────────
 echo "=== Step 1: Create namespace ==="

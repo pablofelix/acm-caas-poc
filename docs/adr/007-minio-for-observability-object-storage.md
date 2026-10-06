@@ -14,9 +14,13 @@ ACM's MultiClusterObservability requires S3-compatible object storage for Thanos
 
 ## Decision
 
-**PoC:** Use MinIO deployed as a single pod with a PVC (`ibmc-vpc-block-10iops-tier`, 20Gi). The `acmlab monitor setup` command deploys MinIO, creates the Thanos secret, and creates the MCO CR — all idempotent. `acmlab monitor teardown` removes everything cleanly.
+The PoC uses MinIO. Two additional tiers are planned but not yet implemented:
 
-**Production:** Replace MinIO with IBM Cloud Object Storage (COS) or the cloud provider's native object storage. The only change is the Thanos secret content — the MCO CR and all other configuration remain identical.
+**PoC (minio) — implemented:** MinIO deployed as a single pod with a PVC (`ibmc-vpc-block-10iops-tier`, 20Gi). The `acmlab observability setup` command deploys MinIO, creates the Thanos secret, and creates the MCO CR — all idempotent. `acmlab observability teardown` removes everything cleanly. This is the only backend available today.
+
+**Lab (obc) — planned:** ObjectBucketClaim (OBC) backed by NooBaa or a compatible CSI driver. When implemented, a dedicated command will create the OBC, wait for it to bind, read the generated bucket name and credentials from the OBC ConfigMap/Secret, and build the Thanos secret automatically. Not yet available — the `configure-storage` subcommand creates the OBC resource but does not perform credential discovery or Thanos secret assembly.
+
+**Production — planned:** Replace with the cloud provider's native object storage (IBM COS, AWS S3, etc.). The only change is the Thanos secret content — the MCO CR and all other configuration remain identical. Requires manual secret creation until automated.
 
 ```yaml
 # PoC — MinIO
@@ -25,14 +29,22 @@ config:
   bucket: thanos
   endpoint: minio.open-cluster-management-observability.svc.cluster.local:9000
   insecure: true
-  access_key: minio
-  secret_key: minio123
+  access_key: <minio-access-key>
+  secret_key: <minio-secret-key>
 
-# Production — IBM COS
+# Lab — OBC (planned, not yet implemented)
+# type: s3
+# config:
+#   bucket: <obc-generated-bucket>
+#   endpoint: <obc-generated-endpoint>
+#   access_key: <obc-generated-key>
+#   secret_key: <obc-generated-secret>
+
+# Production — cloud object storage
 type: s3
 config:
-  bucket: acm-observability-prod
-  endpoint: s3.us-south.cloud-object-storage.appdomain.cloud
+  bucket: <prod-bucket>
+  endpoint: <provider-endpoint>
   access_key: <HMAC-access-key>
   secret_key: <HMAC-secret-key>
 ```
@@ -43,6 +55,8 @@ config:
 - **Pro:** Setup and teardown are fully automated and idempotent
 - **Pro:** Migration to production is a secret change, not an architecture change
 - **Pro:** MinIO PVC uses the same storage class as other workloads — no new infra
+- **Pro (planned):** OBC path will automate credential discovery — no manual secret assembly (not yet implemented)
 - **Con:** MinIO is single-replica, not HA — acceptable for PoC, not for production
 - **Con:** MinIO PVC data is lost on teardown — acceptable since Thanos metrics are ephemeral for the PoC
 - **Con:** MinIO credentials are hardcoded constants — production must use proper secret management
+- **Con:** No automated backend migration — switching from MinIO to OBC or cloud storage requires manual teardown and re-setup

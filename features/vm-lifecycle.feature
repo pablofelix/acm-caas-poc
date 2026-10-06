@@ -1,3 +1,4 @@
+@vm
 Feature: VM lifecycle management via OpenShift Virtualization (UC-51)
 
   As a platform operator

@@ -21,6 +21,12 @@ const (
 	DefaultMemory   = "4Gi"
 	DefaultImage    = "registry.redhat.io/rhel9/rhel-guest-image:latest"
 	DefaultDiskSize = "20Gi"
+
+	PolicyNamespace    = "open-cluster-management-global-set"
+	CNVPolicyPrefix    = "install-cnv"
+	CNVOperatorName    = "kubevirt-hyperconverged"
+	CNVOperatorChannel = "stable"
+	CNVNamespace       = "openshift-cnv"
 )
 
 type VMOpts struct {
@@ -197,11 +203,70 @@ func (m *Manager) Status(ctx context.Context, name, cluster string) (VMDetail, e
 		}
 	}
 
-	labels := obj.GetLabels()
-	detail.Image = labels["acmlab.redhat.com/vm-image"]
-	detail.DiskSize = labels["acmlab.redhat.com/vm-disk"]
+	annotations := obj.GetAnnotations()
+	detail.Image = annotations["acmlab.redhat.com/vm-image"]
+	detail.DiskSize = annotations["acmlab.redhat.com/vm-disk"]
 
 	return detail, nil
+}
+
+func cnvPolicyName(cluster string) string {
+	return fmt.Sprintf("%s-%s", CNVPolicyPrefix, cluster)
+}
+
+type CNVInstallStatus struct {
+	Cluster   string `json:"cluster"`
+	Compliant string `json:"compliant"`
+}
+
+func (m *Manager) EnsureCNVOperator(ctx context.Context, cluster string) error {
+	m.logger.Info("virtualization.EnsureCNVOperator", "cluster", cluster)
+
+	placement := buildCNVPlacement(cluster)
+	if err := m.client.CreateIfNotExists(ctx, client.GVRPlacement, PolicyNamespace, placement); err != nil {
+		return fmt.Errorf("creating CNV placement: %w", err)
+	}
+
+	policy := buildCNVPolicy(cluster)
+	if err := m.client.CreateIfNotExists(ctx, client.GVRPolicy, PolicyNamespace, policy); err != nil {
+		return fmt.Errorf("creating CNV policy: %w", err)
+	}
+
+	binding := buildCNVPlacementBinding(cluster)
+	if err := m.client.CreateIfNotExists(ctx, client.GVRPlacementBinding, PolicyNamespace, binding); err != nil {
+		return fmt.Errorf("creating CNV placement binding: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Manager) CNVStatus(ctx context.Context, cluster string) (*CNVInstallStatus, error) {
+	m.logger.Info("virtualization.CNVStatus", "cluster", cluster)
+	name := cnvPolicyName(cluster)
+	obj, err := m.client.Get(ctx, client.GVRPolicy, PolicyNamespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return &CNVInstallStatus{Cluster: cluster, Compliant: "NotInstalled"}, nil
+		}
+		return nil, fmt.Errorf("getting CNV policy: %w", err)
+	}
+	status, _ := obj.Object["status"].(map[string]interface{})
+	compliant := "Pending"
+	if status != nil {
+		if c, ok := status["compliant"].(string); ok {
+			compliant = c
+		}
+	}
+	return &CNVInstallStatus{Cluster: cluster, Compliant: compliant}, nil
+}
+
+func (m *Manager) RemoveCNVOperator(ctx context.Context, cluster string) error {
+	m.logger.Info("virtualization.RemoveCNVOperator", "cluster", cluster)
+	name := cnvPolicyName(cluster)
+	_ = m.client.DeleteIfExists(ctx, client.GVRPlacementBinding, PolicyNamespace, name+"-placement-binding")
+	_ = m.client.DeleteIfExists(ctx, client.GVRPolicy, PolicyNamespace, name)
+	_ = m.client.DeleteIfExists(ctx, client.GVRPlacement, PolicyNamespace, name+"-placement")
+	return nil
 }
 
 func (m *Manager) List(ctx context.Context) ([]VMInfo, error) {

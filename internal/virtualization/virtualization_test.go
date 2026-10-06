@@ -21,7 +21,10 @@ func fakeClient(objs ...runtime.Object) *client.Client {
 	scheme := runtime.NewScheme()
 	fake := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
 		map[schema.GroupVersionResource]string{
-			client.GVRManifestWork: "ManifestWorkList",
+			client.GVRManifestWork:      "ManifestWorkList",
+			client.GVRPolicy:            "PolicyList",
+			client.GVRPlacement:         "PlacementList",
+			client.GVRPlacementBinding:  "PlacementBindingList",
 		}, objs...)
 	return &client.Client{Dynamic: fake}
 }
@@ -59,8 +62,8 @@ func TestDeployDefaultValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ManifestWork not found: %v", err)
 	}
-	labels := obj.GetLabels()
-	if labels["acmlab.redhat.com/vm-image"] != DefaultImage {
+	annotations := obj.GetAnnotations()
+	if annotations["acmlab.redhat.com/vm-image"] != DefaultImage {
 		t.Errorf("default image not applied")
 	}
 }
@@ -165,6 +168,108 @@ func TestListEmpty(t *testing.T) {
 	}
 	if len(vms) != 0 {
 		t.Errorf("got %d VMs, want 0", len(vms))
+	}
+}
+
+func TestEnsureCNVOperator(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	if err := mgr.EnsureCNVOperator(context.Background(), "spoke1"); err != nil {
+		t.Fatalf("EnsureCNVOperator failed: %v", err)
+	}
+
+	policyName := cnvPolicyName("spoke1")
+
+	policy, err := c.Get(context.Background(), client.GVRPolicy, PolicyNamespace, policyName)
+	if err != nil {
+		t.Fatalf("Policy not found: %v", err)
+	}
+	spec, _ := policy.Object["spec"].(map[string]interface{})
+	if spec["remediationAction"] != "enforce" {
+		t.Errorf("remediation = %v, want enforce", spec["remediationAction"])
+	}
+	templates, _ := spec["policy-templates"].([]interface{})
+	if len(templates) != 2 {
+		t.Errorf("got %d policy templates, want 2", len(templates))
+	}
+
+	_, err = c.Get(context.Background(), client.GVRPlacement, PolicyNamespace, policyName+"-placement")
+	if err != nil {
+		t.Fatalf("Placement not found: %v", err)
+	}
+
+	_, err = c.Get(context.Background(), client.GVRPlacementBinding, PolicyNamespace, policyName+"-placement-binding")
+	if err != nil {
+		t.Fatalf("PlacementBinding not found: %v", err)
+	}
+}
+
+func TestEnsureCNVOperatorIdempotent(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	if err := mgr.EnsureCNVOperator(context.Background(), "spoke1"); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if err := mgr.EnsureCNVOperator(context.Background(), "spoke1"); err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+}
+
+func TestCNVStatusNotInstalled(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	status, err := mgr.CNVStatus(context.Background(), "spoke1")
+	if err != nil {
+		t.Fatalf("CNVStatus failed: %v", err)
+	}
+	if status.Compliant != "NotInstalled" {
+		t.Errorf("compliant = %q, want NotInstalled", status.Compliant)
+	}
+}
+
+func TestCNVStatusPending(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	_ = mgr.EnsureCNVOperator(context.Background(), "spoke1")
+
+	status, err := mgr.CNVStatus(context.Background(), "spoke1")
+	if err != nil {
+		t.Fatalf("CNVStatus failed: %v", err)
+	}
+	if status.Compliant != "Pending" {
+		t.Errorf("compliant = %q, want Pending", status.Compliant)
+	}
+}
+
+func TestRemoveCNVOperator(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	_ = mgr.EnsureCNVOperator(context.Background(), "spoke1")
+
+	if err := mgr.RemoveCNVOperator(context.Background(), "spoke1"); err != nil {
+		t.Fatalf("RemoveCNVOperator failed: %v", err)
+	}
+
+	status, err := mgr.CNVStatus(context.Background(), "spoke1")
+	if err != nil {
+		t.Fatalf("CNVStatus after remove failed: %v", err)
+	}
+	if status.Compliant != "NotInstalled" {
+		t.Errorf("compliant = %q, want NotInstalled after remove", status.Compliant)
+	}
+}
+
+func TestRemoveCNVOperatorNotFound(t *testing.T) {
+	c := fakeClient()
+	mgr := New(c, config.Config{}, discardLogger)
+
+	if err := mgr.RemoveCNVOperator(context.Background(), "nope"); err != nil {
+		t.Fatalf("Remove non-existent should not error: %v", err)
 	}
 }
 

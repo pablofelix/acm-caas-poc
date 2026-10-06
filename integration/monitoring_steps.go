@@ -19,6 +19,7 @@ func registerMonitoringSteps(sc *godog.ScenarioContext, s *suiteContext) {
 }
 
 func (s *suiteContext) managedClusterJoinedAndAvailable(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	cluster, err := s.fleet.GetCluster(ctx, name)
 	if err != nil {
 		return fmt.Errorf("cluster %s not found: %w", name, err)
@@ -30,6 +31,7 @@ func (s *suiteContext) managedClusterJoinedAndAvailable(ctx context.Context, nam
 }
 
 func (s *suiteContext) iGetClusterResources(ctx context.Context, name string) error {
+	name = s.resolveCluster(name)
 	res, err := s.monitoring.GetClusterResources(ctx, name)
 	if err != nil {
 		return err

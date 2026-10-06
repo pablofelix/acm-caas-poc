@@ -2,21 +2,41 @@ package provisioning
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+func copyMap(m map[string]interface{}) map[string]interface{} {
+	c := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
+}
+
+func k8sMinorVersion(version string) int {
+	v := strings.TrimPrefix(version, "v")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return 0
+	}
+	minor, _ := strconv.Atoi(parts[1])
+	return minor
+}
+
 func buildCAPICluster(opts CAPIClusterOpts) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cluster.x-k8s.io/v1beta1",
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
 			"kind":       "Cluster",
 			"metadata": map[string]interface{}{
 				"name":      opts.Name,
 				"namespace": opts.Namespace,
 				"labels": map[string]interface{}{
-					"acmlab.redhat.com/managed":     "true",
-					"acmlab.redhat.com/provisioner":  "capi",
+					"acmlab.redhat.com/managed":        "true",
+					"acmlab.redhat.com/provisioner":    "capi",
 					"acmlab.redhat.com/infra-provider": opts.InfraProvider,
 				},
 			},
@@ -30,16 +50,14 @@ func buildCAPICluster(opts CAPIClusterOpts) *unstructured.Unstructured {
 					},
 				},
 				"infrastructureRef": map[string]interface{}{
-					"apiVersion": fmt.Sprintf("infrastructure.cluster.x-k8s.io/v1beta1"),
-					"kind":       infraClusterKind(opts.InfraProvider),
-					"name":       opts.Name,
-					"namespace":  opts.Namespace,
+					"apiGroup": "infrastructure.cluster.x-k8s.io",
+					"kind":     infraClusterKind(opts.InfraProvider),
+					"name":     opts.Name,
 				},
 				"controlPlaneRef": map[string]interface{}{
-					"apiVersion": "controlplane.cluster.x-k8s.io/v1beta1",
-					"kind":       "KubeadmControlPlane",
-					"name":       opts.Name + "-control-plane",
-					"namespace":  opts.Namespace,
+					"apiGroup": "controlplane.cluster.x-k8s.io",
+					"kind":     "KubeadmControlPlane",
+					"name":     opts.Name + "-control-plane",
 				},
 			},
 		},
@@ -64,7 +82,7 @@ func infraClusterKind(provider string) string {
 func buildCAPIMachineDeployment(opts CAPIClusterOpts) *unstructured.Unstructured {
 	return &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cluster.x-k8s.io/v1beta1",
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
 			"kind":       "MachineDeployment",
 			"metadata": map[string]interface{}{
 				"name":      opts.Name + "-workers",
@@ -93,17 +111,15 @@ func buildCAPIMachineDeployment(opts CAPIClusterOpts) *unstructured.Unstructured
 						"version":     opts.KubernetesVersion,
 						"bootstrap": map[string]interface{}{
 							"configRef": map[string]interface{}{
-								"apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1",
-								"kind":       "KubeadmConfigTemplate",
-								"name":       opts.Name + "-workers",
-								"namespace":  opts.Namespace,
+								"apiGroup": "bootstrap.cluster.x-k8s.io",
+								"kind":     "KubeadmConfigTemplate",
+								"name":     opts.Name + "-workers",
 							},
 						},
 						"infrastructureRef": map[string]interface{}{
-							"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta1",
-							"kind":       infraMachineTemplateKind(opts.InfraProvider),
-							"name":       opts.Name + "-workers",
-							"namespace":  opts.Namespace,
+							"apiGroup": "infrastructure.cluster.x-k8s.io",
+							"kind":     infraMachineTemplateKind(opts.InfraProvider),
+							"name":     opts.Name + "-workers",
 						},
 					},
 				},
@@ -124,6 +140,191 @@ func infraMachineTemplateKind(provider string) string {
 		return "DockerMachineTemplate"
 	default:
 		return "InfrastructureMachineTemplate"
+	}
+}
+
+func buildCAPIClusterForAWS(opts CAPIClusterOpts) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "cluster.x-k8s.io/v1beta2",
+			"kind":       "Cluster",
+			"metadata": map[string]interface{}{
+				"name":      opts.Name,
+				"namespace": opts.Namespace,
+				"labels": map[string]interface{}{
+					"acmlab.redhat.com/managed":         "true",
+					"acmlab.redhat.com/provisioner":     "capi",
+					"acmlab.redhat.com/infra-provider":  "aws",
+					"acmlab.redhat.com/kubernetes-version": opts.KubernetesVersion,
+				},
+			},
+			"spec": map[string]interface{}{
+				"clusterNetwork": map[string]interface{}{
+					"pods": map[string]interface{}{
+						"cidrBlocks": []interface{}{"192.168.0.0/16"},
+					},
+					"services": map[string]interface{}{
+						"cidrBlocks": []interface{}{"10.128.0.0/12"},
+					},
+				},
+				"infrastructureRef": map[string]interface{}{
+					"apiGroup": "infrastructure.cluster.x-k8s.io",
+					"kind":     "AWSCluster",
+					"name":     opts.Name,
+				},
+				"controlPlaneRef": map[string]interface{}{
+					"apiGroup": "controlplane.cluster.x-k8s.io",
+					"kind":     "KubeadmControlPlane",
+					"name":     opts.Name + "-control-plane",
+				},
+			},
+		},
+	}
+}
+
+func buildAWSCluster(opts CAPIClusterOpts) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta2",
+			"kind":       "AWSCluster",
+			"metadata": map[string]interface{}{
+				"name":      opts.Name,
+				"namespace": opts.Namespace,
+				"labels": map[string]interface{}{
+					"acmlab.redhat.com/managed": "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"region":     opts.Region,
+				"sshKeyName": opts.SSHKeyName,
+			},
+		},
+	}
+}
+
+func buildAWSMachineTemplate(name string, opts CAPIClusterOpts, iamProfile string) *unstructured.Unstructured {
+	machineSpec := map[string]interface{}{
+		"instanceType": opts.InstanceType,
+		"rootVolume": map[string]interface{}{
+			"size": opts.RootVolumeSize,
+		},
+	}
+	if iamProfile != "" {
+		machineSpec["iamInstanceProfile"] = iamProfile
+	}
+	if opts.SSHKeyName != "" {
+		machineSpec["sshKeyName"] = opts.SSHKeyName
+	}
+	if opts.AMI != "" {
+		machineSpec["ami"] = map[string]interface{}{
+			"id": opts.AMI,
+		}
+	}
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "infrastructure.cluster.x-k8s.io/v1beta2",
+			"kind":       "AWSMachineTemplate",
+			"metadata": map[string]interface{}{
+				"name":      name,
+				"namespace": opts.Namespace,
+				"labels": map[string]interface{}{
+					"acmlab.redhat.com/managed": "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"template": map[string]interface{}{
+					"spec": machineSpec,
+				},
+			},
+		},
+	}
+}
+
+func buildKubeadmControlPlane(opts CAPIClusterOpts) *unstructured.Unstructured {
+	cloudProviderArg := []interface{}{
+		map[string]interface{}{"name": "cloud-provider", "value": "external"},
+	}
+
+	// kubelet needs --cloud-provider=external so it adds the uninitialized taint
+	// that signals the CCM to set providerID. Deprecated in 1.31 but still required.
+	nodeReg := map[string]interface{}{
+		"name":             "{{ ds.meta_data.local_hostname }}",
+		"kubeletExtraArgs": cloudProviderArg,
+	}
+
+	kubeadmConfigSpec := map[string]interface{}{
+		"initConfiguration": map[string]interface{}{
+			"nodeRegistration": nodeReg,
+		},
+		"joinConfiguration": map[string]interface{}{
+			"nodeRegistration": copyMap(nodeReg),
+		},
+	}
+
+	// --cloud-provider removed from apiserver/controller-manager in k8s 1.29
+	minor := k8sMinorVersion(opts.KubernetesVersion)
+	if minor > 0 && minor < 29 {
+		kubeadmConfigSpec["clusterConfiguration"] = map[string]interface{}{
+			"apiServer": map[string]interface{}{
+				"extraArgs": cloudProviderArg,
+			},
+			"controllerManager": map[string]interface{}{
+				"extraArgs": cloudProviderArg,
+			},
+		}
+	}
+
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "controlplane.cluster.x-k8s.io/v1beta2",
+			"kind":       "KubeadmControlPlane",
+			"metadata": map[string]interface{}{
+				"name":      opts.Name + "-control-plane",
+				"namespace": opts.Namespace,
+			},
+			"spec": map[string]interface{}{
+				"replicas": opts.ControlPlaneReplicas,
+				"version":  opts.KubernetesVersion,
+				"machineTemplate": map[string]interface{}{
+					"spec": map[string]interface{}{
+						"infrastructureRef": map[string]interface{}{
+							"apiGroup": "infrastructure.cluster.x-k8s.io",
+							"kind":     "AWSMachineTemplate",
+							"name":     opts.Name + "-control-plane",
+						},
+					},
+				},
+				"kubeadmConfigSpec": kubeadmConfigSpec,
+			},
+		},
+	}
+}
+
+func buildKubeadmConfigTemplate(opts CAPIClusterOpts) *unstructured.Unstructured {
+	nodeRegistration := map[string]interface{}{
+		"name": "{{ ds.meta_data.local_hostname }}",
+		"kubeletExtraArgs": []interface{}{
+			map[string]interface{}{"name": "cloud-provider", "value": "external"},
+		},
+	}
+	return &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "bootstrap.cluster.x-k8s.io/v1beta2",
+			"kind":       "KubeadmConfigTemplate",
+			"metadata": map[string]interface{}{
+				"name":      opts.Name + "-workers",
+				"namespace": opts.Namespace,
+			},
+			"spec": map[string]interface{}{
+				"template": map[string]interface{}{
+					"spec": map[string]interface{}{
+						"joinConfiguration": map[string]interface{}{
+							"nodeRegistration": nodeRegistration,
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
